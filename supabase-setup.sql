@@ -1,0 +1,205 @@
+-- ============================================================
+-- KEIZ BUCIN - SUPABASE REALTIME SETUP SQL
+-- Copy semua isi file ini -> Supabase -> SQL Editor -> Run
+-- ============================================================
+
+-- 1. Tabel Users (Faiz & Kenat)
+create table if not exists public.users_keiz (
+  id text primary key,
+  username text unique not null,
+  password_hash text not null,
+  nama text not null,
+  foto_profil text default '',
+  foto_latar text default '',
+  bio text default '',
+  lagu_profil text default '',
+  created_at timestamptz default now()
+);
+
+-- 2. Tabel Chat Real-Time
+create table if not exists public.chat_keiz (
+  id uuid primary key default gen_random_uuid(),
+  sender text not null,
+  receiver text not null,
+  message text default '',
+  type text default 'text',
+  image_url text,
+  voice_url text,
+  voice_duration text,
+  is_read boolean default false,
+  created_at timestamptz default now(),
+  reply_to uuid,
+  reply_to_text text,
+  reply_to_sender text,
+  is_deleted boolean default false,
+  react text
+);
+
+-- 3. Tabel Nobar Sync (1 row id=1 untuk pasangan)
+create table if not exists public.nobar_sync (
+  id int primary key default 1,
+  youtube_url text default '',
+  "videoId" text default '',
+  title text default '',
+  is_playing boolean default false,
+  "current_time" double precision default 0,
+  playback_rate double precision default 1,
+  updated_by text default 'Faiz',
+  updated_at timestamptz default now(),
+  action text default 'change_video'
+);
+
+-- 4. Tabel Music Sync (1 row id=1 untuk pasangan)
+create table if not exists public.music_sync (
+  id int primary key default 1,
+  youtube_url text default '',
+  "videoId" text default '',
+  title text default '',
+  artist text default '',
+  thumbnail text default '',
+  duration_ms int default 213000,
+  is_playing boolean default false,
+  "current_time" double precision default 0,
+  updated_by text default 'Faiz',
+  updated_at timestamptz default now(),
+  action text default 'change_song'
+);
+
+-- 5. Tabel Live Presence (Faiz & Kenat lagi ngapain)
+create table if not exists public.presence_keiz (
+  "user" text primary key,
+  status text default 'online',
+  lagi_ngapain text default 'di Home',
+  lagi_play_apa text default '',
+  last_seen timestamptz default now()
+);
+
+-- 6. Tabel Call Berdua (WebRTC signaling)
+create table if not exists public.call_keiz (
+  id uuid primary key default gen_random_uuid(),
+  caller text not null,
+  callee text not null,
+  status text default 'ringing',
+  offer text,
+  answer text,
+  voice_effect text default 'normal',
+  created_at timestamptz default now()
+);
+
+-- 7. Tabel Postingan / Album Polaroid
+create table if not exists public.postingan_keiz (
+  id text primary key,
+  author text not null,
+  caption text default '',
+  image_url text not null,
+  created_at timestamptz default now()
+);
+
+-- 8. Tabel Unek-Unek
+create table if not exists public.unek_unek_keiz (
+  id text primary key,
+  author text not null,
+  isi text not null,
+  mood text default 'Kangen 😭',
+  reply text,
+  is_anonymous boolean default false,
+  created_at timestamptz default now()
+);
+
+-- 9. Tabel Antrean Lagu
+create table if not exists public.lagu_keiz (
+  id text primary key,
+  judul text,
+  penyanyi text,
+  cover_url text,
+  youtube_query text,
+  youtube_video_id text,
+  durasi_full int default 213000,
+  added_by text,
+  favorite boolean default false,
+  created_at timestamptz default now()
+);
+
+-- ============================================================
+-- ENABLE RLS + POLICY ALLOW ALL (RUANG PRIVAT FAIZ & KENAT)
+-- ============================================================
+alter table public.users_keiz enable row level security;
+alter table public.chat_keiz enable row level security;
+alter table public.nobar_sync enable row level security;
+alter table public.music_sync enable row level security;
+alter table public.presence_keiz enable row level security;
+alter table public.call_keiz enable row level security;
+alter table public.postingan_keiz enable row level security;
+alter table public.unek_unek_keiz enable row level security;
+alter table public.lagu_keiz enable row level security;
+
+drop policy if exists "allow_all_users_keiz" on public.users_keiz;
+create policy "allow_all_users_keiz" on public.users_keiz for all using (true) with check (true);
+
+drop policy if exists "allow_all_chat_keiz" on public.chat_keiz;
+create policy "allow_all_chat_keiz" on public.chat_keiz for all using (true) with check (true);
+
+drop policy if exists "allow_all_nobar_sync" on public.nobar_sync;
+create policy "allow_all_nobar_sync" on public.nobar_sync for all using (true) with check (true);
+
+drop policy if exists "allow_all_music_sync" on public.music_sync;
+create policy "allow_all_music_sync" on public.music_sync for all using (true) with check (true);
+
+drop policy if exists "allow_all_presence_keiz" on public.presence_keiz;
+create policy "allow_all_presence_keiz" on public.presence_keiz for all using (true) with check (true);
+
+drop policy if exists "allow_all_call_keiz" on public.call_keiz;
+create policy "allow_all_call_keiz" on public.call_keiz for all using (true) with check (true);
+
+drop policy if exists "allow_all_postingan_keiz" on public.postingan_keiz;
+create policy "allow_all_postingan_keiz" on public.postingan_keiz for all using (true) with check (true);
+
+drop policy if exists "allow_all_unek_unek_keiz" on public.unek_unek_keiz;
+create policy "allow_all_unek_unek_keiz" on public.unek_unek_keiz for all using (true) with check (true);
+
+drop policy if exists "allow_all_lagu_keiz" on public.lagu_keiz;
+create policy "allow_all_lagu_keiz" on public.lagu_keiz for all using (true) with check (true);
+
+-- ============================================================
+-- DATA AWAL WAJIB: 2 USER (FAIZ & KENAT) + ROW SYNC KOSONG
+-- ============================================================
+insert into public.users_keiz (id, username, password_hash, nama, foto_profil, foto_latar, bio, lagu_profil)
+values
+  ('faiz', 'faiz', 'faizkece18070528', 'Faiz', '/src/assets/images/avatar_faiz_1795263046125.jpg', '/src/assets/images/galeri_sunset_1795263046141.jpg', 'pacarnya kenat, paling sayang sama yang gemes', ''),
+  ('kenat', 'kenat', 'kenatgemaz07180528', 'Kenat', '/src/assets/images/avatar_kenat_1795263046413.jpg', '/src/assets/images/galeri_sunset_1795263046141.jpg', 'pacarnya faiz, cantik sedunia no debat', '')
+on conflict (id) do nothing;
+
+insert into public.nobar_sync (id, youtube_url, "videoId", title, is_playing, "current_time", playback_rate, updated_by, action)
+values (1, '', '', '', false, 0, 1, 'Faiz', 'change_video')
+on conflict (id) do nothing;
+
+insert into public.music_sync (id, youtube_url, "videoId", title, artist, thumbnail, duration_ms, is_playing, "current_time", updated_by, action)
+values (1, '', '', '', '', '', 213000, false, 0, 'Faiz', 'change_song')
+on conflict (id) do nothing;
+
+-- ============================================================
+-- AKTIFKAN SUPABASE REALTIME UNTUK SEMUA TABEL
+-- ============================================================
+do $$
+declare
+  t text;
+begin
+  foreach t in array array[
+    'users_keiz',
+    'chat_keiz',
+    'nobar_sync',
+    'music_sync',
+    'presence_keiz',
+    'call_keiz',
+    'postingan_keiz',
+    'unek_unek_keiz',
+    'lagu_keiz'
+  ]
+  loop
+    begin
+      execute format('alter publication supabase_realtime add table public.%I', t);
+    exception when duplicate_object then
+      null;
+    end;
+  end loop;
+end $$;

@@ -1,0 +1,8 @@
+{
+  "name": "KEIZ BUCIN 💙💖",
+  "description": "KEIZ BUCIN — ruang berdua buat Faiz & Kenat untuk chat, musik, nobar YouTube, album, sama unek-unek.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
