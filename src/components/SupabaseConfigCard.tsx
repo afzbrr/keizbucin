@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Check,
   ChevronDown,
@@ -11,13 +11,14 @@ import {
 } from 'lucide-react';
 import {
   SUPABASE_SQL_SETUP,
+  checkSupabaseConnection,
   clearSupabaseConfig,
   ensureInitialSyncRows,
+  getConnectionStatus,
   getMaskedSupabaseUrl,
   getSupabaseConfig,
-  isSupabaseConfigured,
   saveSupabaseConfig,
-  testSupabaseConnection,
+  subscribeConnectionStatus,
 } from '../supabaseClient';
 import { soundFX } from '../sound';
 
@@ -33,17 +34,26 @@ export const SupabaseConfigCard: React.FC<SupabaseConfigCardProps> = ({
   onConnected,
 }) => {
   const initial = getSupabaseConfig();
+  const initialConn = getConnectionStatus();
   const [urlInput, setUrlInput] = useState(initial.url);
   const [anonInput, setAnonInput] = useState(initial.anonKey);
-  const [testing, setTesting] = useState(false);
-  const [statusMsg, setStatusMsg] = useState<string | null>(
-    isSupabaseConfigured() ? 'Terhubung ✅' : 'Gagal ❌ — Env belum diset'
-  );
-  const [statusOk, setStatusOk] = useState<boolean>(isSupabaseConfigured());
+  const [testing, setTesting] = useState(initialConn.status === 'checking');
+  const [statusMsg, setStatusMsg] = useState<string | null>(initialConn.message);
+  const [statusOk, setStatusOk] = useState<boolean>(initialConn.ok);
   const [showSql, setShowSql] = useState(false);
   const [copiedSql, setCopiedSql] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
-  const [showManualFields, setShowManualFields] = useState(!initial.fromEnv);
+  const [showManualFields, setShowManualFields] = useState(!initial.fromEnv || initial.isManual);
+
+  useEffect(() => {
+    const unsub = subscribeConnectionStatus((state) => {
+      setStatusOk(state.ok);
+      setStatusMsg(state.message);
+      setTesting(state.status === 'checking');
+    });
+    void checkSupabaseConnection();
+    return unsub;
+  }, []);
 
   const shareUrl =
     typeof window !== 'undefined' &&
@@ -55,7 +65,7 @@ export const SupabaseConfigCard: React.FC<SupabaseConfigCardProps> = ({
     soundFX.playClick();
     setTesting(true);
     setStatusMsg('Lagi ngecek koneksi ke Supabase...');
-    const res = await testSupabaseConnection();
+    const res = await checkSupabaseConnection();
     if (res.ok && !res.missingTables) {
       await ensureInitialSyncRows();
     }
@@ -75,7 +85,7 @@ export const SupabaseConfigCard: React.FC<SupabaseConfigCardProps> = ({
     setStatusMsg('Lagi ngetes koneksi ke Supabase...');
 
     saveSupabaseConfig(urlInput, anonInput);
-    const res = await testSupabaseConnection(urlInput, anonInput);
+    const res = await checkSupabaseConnection();
     if (res.ok && !res.missingTables) {
       await ensureInitialSyncRows();
     }
@@ -103,18 +113,15 @@ export const SupabaseConfigCard: React.FC<SupabaseConfigCardProps> = ({
     setTimeout(() => setCopiedLink(false), 2000);
   };
 
-  const handleReset = () => {
+  const handleReset = async () => {
     soundFX.playClick();
     clearSupabaseConfig();
     const next = getSupabaseConfig();
     setUrlInput(next.url);
     setAnonInput(next.anonKey);
-    setStatusOk(isSupabaseConfigured());
-    setStatusMsg(
-      isSupabaseConfigured()
-        ? 'Terhubung ✅'
-        : 'Gagal ❌ — Gunakan Env Vercel'
-    );
+    const res = await checkSupabaseConnection();
+    setStatusOk(res.ok);
+    setStatusMsg(res.message);
   };
 
   return (
@@ -141,10 +148,12 @@ export const SupabaseConfigCard: React.FC<SupabaseConfigCardProps> = ({
           className={`shrink-0 rounded-full px-2.5 py-0.5 text-[10px] font-extrabold ${
             statusOk
               ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+              : testing
+              ? 'bg-amber-50 text-amber-700 border border-amber-200'
               : 'bg-rose-50 text-rose-600 border border-rose-200'
           }`}
         >
-          {statusOk ? 'Terhubung ✅' : 'Gagal ❌'}
+          {statusOk ? 'Terhubung ✅' : testing ? 'Ngecek...' : 'Gagal ❌'}
         </span>
       </div>
 

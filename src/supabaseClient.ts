@@ -28,18 +28,40 @@ function safeReadStorage(key: string): string {
   }
 }
 
-export function getSupabaseConfig(): { url: string; anonKey: string; fromEnv: boolean } {
+export function getSupabaseConfig(): {
+  url: string;
+  anonKey: string;
+  fromEnv: boolean;
+  isManual: boolean;
+} {
+  // Prioritaskan Manual Env (dari Pengaturan) terlebih dahulu
+  const localUrl = safeReadStorage(STORAGE_KEYS.SB_URL).trim();
+  const localAnon = safeReadStorage(STORAGE_KEYS.SB_ANON).trim();
+  if (localUrl && localAnon) {
+    return {
+      url: localUrl,
+      anonKey: localAnon,
+      fromEnv: false,
+      isManual: true,
+    };
+  }
+
   const envUrl = (import.meta.env.VITE_SUPABASE_URL || '').trim();
   const envAnon = (import.meta.env.VITE_SUPABASE_ANON_KEY || '').trim();
   if (envUrl && envAnon) {
-    return { url: envUrl, anonKey: envAnon, fromEnv: true };
+    return {
+      url: envUrl,
+      anonKey: envAnon,
+      fromEnv: true,
+      isManual: false,
+    };
   }
-  const localUrl = safeReadStorage(STORAGE_KEYS.SB_URL).trim();
-  const localAnon = safeReadStorage(STORAGE_KEYS.SB_ANON).trim();
+
   return {
-    url: localUrl,
-    anonKey: localAnon,
+    url: '',
+    anonKey: '',
     fromEnv: false,
+    isManual: false,
   };
 }
 
@@ -52,7 +74,12 @@ export function getMaskedSupabaseUrl(): string {
 
 function isValidSupabaseCreds(url: string, anonKey: string): boolean {
   if (!url || !anonKey) return false;
-  if (url.includes('YOUR_') || url.includes('xxx.supabase.co') || anonKey === 'xxx' || anonKey.includes('YOUR_')) {
+  if (
+    url.includes('YOUR_') ||
+    url.includes('xxx.supabase.co') ||
+    anonKey === 'xxx' ||
+    anonKey.includes('YOUR_')
+  ) {
     return false;
   }
   try {
@@ -63,11 +90,48 @@ function isValidSupabaseCreds(url: string, anonKey: string): boolean {
   }
 }
 
+export type SupabaseConnectionStatus = 'checking' | 'connected' | 'error';
+
+export interface SupabaseConnectionResult {
+  status: SupabaseConnectionStatus;
+  ok: boolean;
+  message: string;
+  missingTables?: boolean;
+  checkedAt?: number;
+}
+
 let activeClient: SupabaseClient | null = null;
 const reconfigListeners = new Set<() => void>();
-const errorListeners = new Set<(msg: string) => void>();
+const errorListeners = new Set<(msg: string | null) => void>();
+const connectionListeners = new Set<(state: SupabaseConnectionResult) => void>();
 
-export function onSupabaseError(cb: (msg: string) => void): () => void {
+let currentConnectionState: SupabaseConnectionResult = {
+  status: 'checking',
+  ok: false,
+  message: 'Lagi ngecek koneksi ke Supabase...',
+};
+let inFlightCheck: Promise<SupabaseConnectionResult> | null = null;
+
+function notifyConnectionListeners(): void {
+  const snapshot = { ...currentConnectionState };
+  connectionListeners.forEach((fn) => fn(snapshot));
+}
+
+export function getConnectionStatus(): SupabaseConnectionResult {
+  return { ...currentConnectionState };
+}
+
+export function subscribeConnectionStatus(
+  cb: (state: SupabaseConnectionResult) => void
+): () => void {
+  connectionListeners.add(cb);
+  cb({ ...currentConnectionState });
+  return () => {
+    connectionListeners.delete(cb);
+  };
+}
+
+export function onSupabaseError(cb: (msg: string | null) => void): () => void {
   errorListeners.add(cb);
   return () => {
     errorListeners.delete(cb);
@@ -75,7 +139,11 @@ export function onSupabaseError(cb: (msg: string) => void): () => void {
 }
 
 let lastErrorAt = 0;
-function emitSupabaseError(msg = 'Gagal konek ke Supabase, cek Vercel Env ya!'): void {
+function emitSupabaseError(msg: string | null): void {
+  if (msg === null) {
+    errorListeners.forEach((fn) => fn(null));
+    return;
+  }
   const now = Date.now();
   if (now - lastErrorAt < 4000) return;
   lastErrorAt = now;
@@ -86,6 +154,13 @@ function initSupabaseClient(): SupabaseClient | null {
   const { url, anonKey } = getSupabaseConfig();
   if (!isValidSupabaseCreds(url, anonKey)) {
     activeClient = null;
+    currentConnectionState = {
+      status: 'error',
+      ok: false,
+      message: 'Gagal ❌ — URL atau Anon Key Supabase belum diisi.',
+      checkedAt: Date.now(),
+    };
+    notifyConnectionListeners();
     return null;
   }
   activeClient = createClient(url, anonKey, {
@@ -95,6 +170,12 @@ function initSupabaseClient(): SupabaseClient | null {
       },
     },
   });
+  currentConnectionState = {
+    status: 'checking',
+    ok: false,
+    message: 'Lagi ngecek koneksi ke Supabase...',
+  };
+  notifyConnectionListeners();
   return activeClient;
 }
 
@@ -125,6 +206,7 @@ export function saveSupabaseConfig(url: string, anonKey: string): boolean {
   } catch {
     // ignore
   }
+  inFlightCheck = null;
   const client = initSupabaseClient();
   reconfigListeners.forEach((fn) => fn());
   return client !== null;
@@ -137,34 +219,32 @@ export function clearSupabaseConfig(): void {
   } catch {
     // ignore
   }
+  inFlightCheck = null;
   initSupabaseClient();
   reconfigListeners.forEach((fn) => fn());
 }
 
-export async function testSupabaseConnection(
-  customUrl?: string,
-  customAnonKey?: string
-): Promise<{ ok: boolean; message: string; missingTables?: boolean }> {
-  const cfg = getSupabaseConfig();
-  const url = (customUrl ?? cfg.url).trim().replace(/\/+$/, '');
-  const anonKey = (customAnonKey ?? cfg.anonKey).trim();
-
-  if (!isValidSupabaseCreds(url, anonKey)) {
-    return {
-      ok: false,
-      message: 'Gagal ❌ — VITE_SUPABASE_URL atau VITE_SUPABASE_ANON_KEY belum diisi.',
-    };
-  }
+async function runUsersKeizQuery(client: SupabaseClient): Promise<SupabaseConnectionResult> {
+  const timeoutPromise = new Promise<{ error: { code?: string; message: string } }>((resolve) => {
+    window.setTimeout(() => {
+      resolve({ error: { code: 'TIMEOUT', message: 'Koneksi Supabase timeout' } });
+    }, 8000);
+  });
 
   try {
-    const temp = createClient(url, anonKey);
-    const { error } = await temp.from('nobar_sync').select('id').limit(1);
+    const queryPromise = client.from('users_keiz').select('id').limit(1);
+    const result = await Promise.race([queryPromise, timeoutPromise]);
+    const error = result?.error;
+
     if (!error) {
       return {
+        status: 'connected',
         ok: true,
         message: 'Terhubung ✅',
+        checkedAt: Date.now(),
       };
     }
+
     const errText = `${error.code || ''} ${error.message || ''}`.toLowerCase();
     if (
       error.code === '42P01' ||
@@ -172,11 +252,14 @@ export async function testSupabaseConnection(
       errText.includes('could not find the table')
     ) {
       return {
+        status: 'connected',
         ok: true,
         missingTables: true,
         message: 'Terhubung ✅ (jalankan supabase-setup.sql di SQL Editor Supabase)',
+        checkedAt: Date.now(),
       };
     }
+
     if (
       error.code === '401' ||
       error.code === '403' ||
@@ -184,35 +267,118 @@ export async function testSupabaseConnection(
       errText.includes('jwt')
     ) {
       return {
+        status: 'error',
         ok: false,
         message: 'Gagal ❌ — Anon Key Supabase ditolak.',
+        checkedAt: Date.now(),
       };
     }
+
+    if (error.code === 'TIMEOUT') {
+      return {
+        status: 'error',
+        ok: false,
+        message: 'Gagal ❌ — Koneksi ke Supabase timeout.',
+        checkedAt: Date.now(),
+      };
+    }
+
     return {
+      status: 'error',
       ok: false,
       message: `Gagal ❌ — ${error.message}`,
+      checkedAt: Date.now(),
     };
   } catch {
     return {
+      status: 'error',
       ok: false,
-      message: 'Gagal ❌ — Gagal konek ke Supabase, cek Vercel Env ya!',
+      message: 'Gagal ❌ — Tidak bisa menghubungi server Supabase.',
+      checkedAt: Date.now(),
     };
   }
+}
+
+export async function checkSupabaseConnection(
+  customUrl?: string,
+  customAnonKey?: string
+): Promise<SupabaseConnectionResult> {
+  const isCustomTest = customUrl !== undefined || customAnonKey !== undefined;
+  const cfg = getSupabaseConfig();
+  const url = (customUrl ?? cfg.url).trim().replace(/\/+$/, '');
+  const anonKey = (customAnonKey ?? cfg.anonKey).trim();
+
+  if (!isValidSupabaseCreds(url, anonKey)) {
+    const invalidResult: SupabaseConnectionResult = {
+      status: 'error',
+      ok: false,
+      message: 'Gagal ❌ — URL atau Anon Key Supabase belum diisi.',
+      checkedAt: Date.now(),
+    };
+    if (!isCustomTest) {
+      currentConnectionState = invalidResult;
+      notifyConnectionListeners();
+    }
+    return invalidResult;
+  }
+
+  if (!isCustomTest && inFlightCheck) {
+    return inFlightCheck;
+  }
+
+  const executeCheck = async (): Promise<SupabaseConnectionResult> => {
+    if (!isCustomTest) {
+      currentConnectionState = {
+        ...currentConnectionState,
+        status: 'checking',
+      };
+      notifyConnectionListeners();
+    }
+
+    const client =
+      !isCustomTest && activeClient ? activeClient : createClient(url, anonKey);
+    const res = await runUsersKeizQuery(client);
+
+    if (!isCustomTest || (url === cfg.url && anonKey === cfg.anonKey)) {
+      currentConnectionState = res;
+      notifyConnectionListeners();
+      if (res.ok) {
+        emitSupabaseError(null);
+      } else {
+        emitSupabaseError(res.message);
+      }
+    }
+    return res;
+  };
+
+  if (!isCustomTest) {
+    inFlightCheck = executeCheck().finally(() => {
+      inFlightCheck = null;
+    });
+    return inFlightCheck;
+  }
+
+  return executeCheck();
+}
+
+export async function testSupabaseConnection(
+  customUrl?: string,
+  customAnonKey?: string
+): Promise<SupabaseConnectionResult> {
+  return checkSupabaseConnection(customUrl, customAnonKey);
 }
 
 export async function ensureInitialSyncRows(): Promise<boolean> {
   const sb = activeClient;
   if (!sb) return false;
   try {
+    const conn = await checkSupabaseConnection();
+    if (!conn.ok) return false;
+
     const [nobarRes, musicRes] = await Promise.all([
       sb.from('nobar_sync').select('id').eq('id', 1).maybeSingle(),
       sb.from('music_sync').select('id').eq('id', 1).maybeSingle(),
     ]);
-
-    if (nobarRes.error && musicRes.error) {
-      emitSupabaseError('Gagal konek ke Supabase, cek Vercel Env ya!');
-      return false;
-    }
 
     if (!nobarRes.error && !nobarRes.data) {
       await sb.from('nobar_sync').upsert([
@@ -250,7 +416,6 @@ export async function ensureInitialSyncRows(): Promise<boolean> {
 
     return true;
   } catch {
-    emitSupabaseError('Gagal konek ke Supabase, cek Vercel Env ya!');
     return false;
   }
 }
@@ -533,10 +698,10 @@ export async function verifyUserLogin(role: Role, password: string): Promise<boo
         return String(data.password_hash) === password;
       }
       if (error && error.code !== '42P01') {
-        emitSupabaseError('Gagal konek ke Supabase, cek Vercel Env ya!');
+        void checkSupabaseConnection();
       }
     } catch {
-      emitSupabaseError('Gagal konek ke Supabase, cek Vercel Env ya!');
+      void checkSupabaseConnection();
     }
   }
   return password === EXPECTED_PASSWORDS[role];
@@ -550,7 +715,7 @@ export async function fetchProfile(): Promise<CoupleProfile> {
     const { data, error } = await sb.from('users_keiz').select('*');
     if (error) {
       if (error.code !== '42P01') {
-        emitSupabaseError('Gagal konek ke Supabase, cek Vercel Env ya!');
+        void checkSupabaseConnection();
       }
       return DEFAULT_PROFILE;
     }
@@ -579,7 +744,7 @@ export async function fetchProfile(): Promise<CoupleProfile> {
       };
     }
   } catch {
-    emitSupabaseError('Gagal konek ke Supabase, cek Vercel Env ya!');
+    void checkSupabaseConnection();
   }
   return DEFAULT_PROFILE;
 }
@@ -611,10 +776,10 @@ export async function saveProfile(profile: CoupleProfile): Promise<CoupleProfile
         },
       ]);
       if (error) {
-        emitSupabaseError('Gagal nyimpan profil ke Supabase, cek Vercel Env ya!');
+        emitSupabaseError('Gagal nyimpan profil ke Supabase.');
       }
     } catch {
-      emitSupabaseError('Gagal nyimpan profil ke Supabase, cek Vercel Env ya!');
+      emitSupabaseError('Gagal nyimpan profil ke Supabase.');
     }
   }
   localChannel?.postMessage({ type: 'profil_update', payload: profile });
@@ -657,7 +822,7 @@ export async function fetchPostingan(): Promise<GalleryPhoto[]> {
       .limit(100);
     if (error) {
       if (error.code !== '42P01') {
-        emitSupabaseError('Gagal konek ke Supabase, cek Vercel Env ya!');
+        void checkSupabaseConnection();
       }
       return [];
     }
@@ -665,7 +830,7 @@ export async function fetchPostingan(): Promise<GalleryPhoto[]> {
       ? data.map((r, i) => mapPostinganRow(r as Record<string, unknown>, i))
       : [];
   } catch {
-    emitSupabaseError('Gagal konek ke Supabase, cek Vercel Env ya!');
+    void checkSupabaseConnection();
     return [];
   }
 }
@@ -775,7 +940,7 @@ export async function fetchChats(): Promise<ChatMessage[]> {
       .limit(200);
     if (error) {
       if (error.code !== '42P01') {
-        emitSupabaseError('Gagal konek ke Supabase, cek Vercel Env ya!');
+        void checkSupabaseConnection();
       }
       return [];
     }
@@ -783,7 +948,7 @@ export async function fetchChats(): Promise<ChatMessage[]> {
       ? data.map((row, idx) => mapChatRow(row as Record<string, unknown>, idx))
       : [];
   } catch {
-    emitSupabaseError('Gagal konek ke Supabase, cek Vercel Env ya!');
+    void checkSupabaseConnection();
     return [];
   }
 }
@@ -952,7 +1117,7 @@ export async function fetchSongs(): Promise<SongItem[]> {
       .order('created_at', { ascending: false });
     if (error) {
       if (error.code !== '42P01') {
-        emitSupabaseError('Gagal konek ke Supabase, cek Vercel Env ya!');
+        void checkSupabaseConnection();
       }
       return [];
     }
@@ -974,7 +1139,7 @@ export async function fetchSongs(): Promise<SongItem[]> {
       favorite: Boolean(row.favorite ?? false),
     }));
   } catch {
-    emitSupabaseError('Gagal konek ke Supabase, cek Vercel Env ya!');
+    void checkSupabaseConnection();
     return [];
   }
 }
@@ -1078,13 +1243,13 @@ export async function fetchNobarSync(): Promise<NobarSyncState | null> {
       .maybeSingle();
     if (error) {
       if (error.code !== '42P01') {
-        emitSupabaseError('Gagal konek ke Supabase, cek Vercel Env ya!');
+        void checkSupabaseConnection();
       }
       return null;
     }
     return data ? mapNobarRow(data as Record<string, unknown>) : null;
   } catch {
-    emitSupabaseError('Gagal konek ke Supabase, cek Vercel Env ya!');
+    void checkSupabaseConnection();
     return null;
   }
 }
@@ -1282,13 +1447,13 @@ export async function fetchMusicSync(): Promise<MusicSyncState | null> {
       .maybeSingle();
     if (error) {
       if (error.code !== '42P01') {
-        emitSupabaseError('Gagal konek ke Supabase, cek Vercel Env ya!');
+        void checkSupabaseConnection();
       }
       return null;
     }
     return data ? mapMusicRow(data as Record<string, unknown>) : null;
   } catch {
-    emitSupabaseError('Gagal konek ke Supabase, cek Vercel Env ya!');
+    void checkSupabaseConnection();
     return null;
   }
 }
@@ -1782,7 +1947,7 @@ export async function fetchUnekList(): Promise<UnekItem[]> {
       .limit(50);
     if (error) {
       if (error.code !== '42P01') {
-        emitSupabaseError('Gagal konek ke Supabase, cek Vercel Env ya!');
+        void checkSupabaseConnection();
       }
       return [];
     }
@@ -1810,7 +1975,7 @@ export async function fetchUnekList(): Promise<UnekItem[]> {
       };
     });
   } catch {
-    emitSupabaseError('Gagal konek ke Supabase, cek Vercel Env ya!');
+    void checkSupabaseConnection();
     return [];
   }
 }

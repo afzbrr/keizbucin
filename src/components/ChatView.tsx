@@ -15,12 +15,14 @@ import {
   X,
 } from 'lucide-react';
 import {
+  checkSupabaseConnection,
   deleteChatMessage,
   fetchChats,
-  isSupabaseConfigured,
+  getConnectionStatus,
   markChatsAsRead,
   sendChatMessage,
   subscribeChatRealtime,
+  subscribeConnectionStatus,
   updateChatReact,
 } from '../supabaseClient';
 import { soundFX } from '../sound';
@@ -87,7 +89,17 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const [showSupabaseConfig, setShowSupabaseConfig] = useState(false);
   const [recordingVN, setRecordingVN] = useState(false);
   const [copiedToast, setCopiedToast] = useState<string | null>(null);
-  const [sbConnected, setSbConnected] = useState(isSupabaseConfigured());
+  const [sbConnected, setSbConnected] = useState<boolean>(
+    () => getConnectionStatus().ok
+  );
+
+  useEffect(() => {
+    const unsub = subscribeConnectionStatus((state) => {
+      setSbConnected(state.ok);
+    });
+    void checkSupabaseConnection();
+    return unsub;
+  }, []);
 
   const listEndRef = useRef<HTMLDivElement | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);

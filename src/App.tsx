@@ -33,6 +33,7 @@ import { useMusicSync } from './hooks/useMusicSync';
 import {
   DEFAULT_PROFILE,
   addUnekItem,
+  checkSupabaseConnection,
   ensureInitialSyncRows,
   fetchProfile,
   getSavedSession,
@@ -40,6 +41,7 @@ import {
   onSupabaseError,
   onSupabaseReconfigured,
   setSavedSession,
+  subscribeConnectionStatus,
   subscribePresence,
   subscribeRealtime,
   upsertPresence,
@@ -118,6 +120,7 @@ export default function App() {
     isSupabaseConfigured()
   );
   const [supabaseToast, setSupabaseToast] = useState<string | null>(null);
+  const [errorBannerDismissed, setErrorBannerDismissed] = useState(false);
   const [currentUser, setCurrentUser] = useState<Role | null>(() =>
     getSavedSession()
   );
@@ -167,16 +170,20 @@ export default function App() {
     const unsubReconfig = onSupabaseReconfigured(() => {
       setSupabaseReady(isSupabaseConfigured());
     });
-    let timer: number | undefined;
+    const unsubConn = subscribeConnectionStatus((state) => {
+      if (state.ok) {
+        setSupabaseToast(null);
+      } else if (state.status === 'error' && isSupabaseConfigured()) {
+        setSupabaseToast(state.message);
+      }
+    });
     const unsubError = onSupabaseError((msg) => {
       setSupabaseToast(msg);
-      if (timer) window.clearTimeout(timer);
-      timer = window.setTimeout(() => setSupabaseToast(null), 4000);
     });
     return () => {
       unsubReconfig();
+      unsubConn();
       unsubError();
-      if (timer) window.clearTimeout(timer);
     };
   }, []);
 
@@ -196,8 +203,12 @@ export default function App() {
 
   useEffect(() => {
     if (!supabaseReady) return;
-    ensureInitialSyncRows();
-    loadProfile();
+    void checkSupabaseConnection().then((res) => {
+      if (res.ok) {
+        void ensureInitialSyncRows();
+        void loadProfile();
+      }
+    });
     const unsub = subscribeRealtime({
       onProfil: () => loadProfile(),
     });
@@ -559,16 +570,27 @@ export default function App() {
       <BurstLayer particles={particles} />
 
       {/* Live Partner Activity Transition Toast */}
-      {currentUser && presenceToast && !supabaseToast && (
+      {currentUser && presenceToast && (!supabaseToast || errorBannerDismissed) && (
         <div className="animate-bubble-pop fixed left-1/2 top-14 z-40 -translate-x-1/2 rounded-full border border-[#FFD6E7] bg-white/95 px-4 py-1.5 text-[11px] font-extrabold text-[#D81B6E] shadow-lg backdrop-blur-md">
           {presenceToast}
         </div>
       )}
 
-      {/* Non-crashing Supabase Connection Error Toast */}
-      {supabaseToast && (
-        <div className="animate-bubble-pop fixed left-1/2 top-4 z-50 w-[calc(100%-32px)] max-w-[398px] -translate-x-1/2 rounded-2xl border border-rose-200 bg-rose-50/95 px-4 py-2.5 text-center text-[12px] font-extrabold text-rose-700 shadow-lg backdrop-blur-md">
-          {supabaseToast}
+      {/* Dismissible Supabase Connection Error Toast (only when real query error/timeout & not dismissed) */}
+      {supabaseReady && supabaseToast && !errorBannerDismissed && (
+        <div className="animate-bubble-pop fixed left-1/2 top-4 z-50 flex w-[calc(100%-32px)] max-w-[398px] -translate-x-1/2 items-center justify-between gap-2 rounded-2xl border border-rose-200 bg-rose-50/95 px-4 py-2.5 text-[12px] font-extrabold text-rose-700 shadow-lg backdrop-blur-md">
+          <span className="flex-1 text-left leading-snug">{supabaseToast}</span>
+          <button
+            type="button"
+            onClick={() => {
+              setErrorBannerDismissed(true);
+              setSupabaseToast(null);
+            }}
+            aria-label="Tutup peringatan Supabase"
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-rose-100 text-rose-700 hover:bg-rose-200 cursor-pointer"
+          >
+            <X className="h-4 w-4" />
+          </button>
         </div>
       )}
 
@@ -597,10 +619,10 @@ export default function App() {
         </>
       )}
 
-      {/* MISSING SUPABASE ENV GATE */}
+      {/* SETUP SUPABASE WHEN NEITHER MANUAL ENV NOR VERCEL ENV IS FILLED */}
       {!supabaseReady ? (
         <div className="relative z-10 mx-auto flex min-h-screen w-full max-w-[430px] flex-col justify-center gap-4 px-4 py-8">
-          <div className="keiz-card space-y-3 border border-rose-200 bg-white/95 p-5">
+          <div className="keiz-card space-y-3 border border-[#FFD6E7] bg-white/95 p-5">
             <div className="flex items-center gap-2.5">
               <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border border-[#FFD6E7] bg-[#FFE3EE]">
                 <Heart className="h-5 w-5 fill-[#FF2E7E] text-[#FF2E7E]" />
@@ -615,9 +637,9 @@ export default function App() {
               </div>
             </div>
 
-            <div className="rounded-2xl border border-rose-200 bg-rose-50 p-3.5">
-              <p className="text-xs font-extrabold leading-relaxed text-rose-700">
-                Supabase belum di-setting di Vercel, cek VITE_SUPABASE_URL di Vercel -&gt; Settings -&gt; Environment Variables
+            <div className="rounded-2xl border border-[#FFD6E7] bg-[#FFF2F7] p-3.5">
+              <p className="text-xs font-extrabold leading-relaxed text-[#D81B6E]">
+                Isi URL &amp; Anon Key Supabase di bawah (atau lewat VITE_SUPABASE_URL di Vercel Env) lalu klik Simpan &amp; Test Koneksi.
               </p>
             </div>
           </div>
