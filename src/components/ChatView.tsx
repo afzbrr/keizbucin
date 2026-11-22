@@ -685,14 +685,21 @@ export const ChatView: React.FC<ChatViewProps> = ({
               </div>
 
               {msg.failed && (
-                <button
-                  type="button"
-                  onClick={() => handleRetrySend(msg)}
-                  className="mt-1 flex items-center gap-1 rounded-full border border-rose-200 bg-rose-50 px-2.5 py-0.5 text-[10px] font-extrabold text-rose-600 shadow-sm cursor-pointer"
-                >
-                  <RotateCcw className="h-3 w-3" />
-                  <span>Gagal terkirim, klik untuk coba lagi</span>
-                </button>
+                <div className="mt-1 flex max-w-[85%] flex-col items-end gap-1">
+                  <button
+                    type="button"
+                    onClick={() => handleRetrySend(msg)}
+                    className="flex items-center gap-1 rounded-full border border-rose-200 bg-rose-50 px-2.5 py-0.5 text-[10px] font-extrabold text-rose-600 shadow-sm cursor-pointer"
+                  >
+                    <RotateCcw className="h-3 w-3" />
+                    <span>Gagal terkirim, klik untuk coba lagi</span>
+                  </button>
+                  {msg.errorDetails && (
+                    <p className="select-text break-all rounded-lg border border-rose-200 bg-rose-50/95 px-2.5 py-1 text-left text-[10px] font-bold leading-snug text-rose-700">
+                      {msg.errorDetails}
+                    </p>
+                  )}
+                </div>
               )}
 
               {/* Floating React + Context Action Bar */}

@@ -551,7 +551,7 @@ export const CallOverlay: React.FC<CallOverlayProps> = ({
             <div className="flex items-center justify-between">
               <span className="inline-flex items-center gap-1.5 rounded-full bg-white/10 px-3 py-1 text-[10px] font-extrabold text-pink-200">
                 <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
-                CALL BERDUA + VOICE CHANGER
+                CALL BERDUA · TELEPON MESRA
               </span>
               {activeCall ? (
                 <button
@@ -611,7 +611,7 @@ export const CallOverlay: React.FC<CallOverlayProps> = ({
             <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-3">
               <div className="mb-2 flex items-center gap-1.5 text-[11px] font-extrabold text-pink-200">
                 <Sparkles className="h-3.5 w-3.5 text-[#FF7AB8]" />
-                <span>Voice Changer Lucu</span>
+                <span>Efek Suara Lucu</span>
               </div>
               <div className="grid grid-cols-5 gap-1.5">
                 {VOICE_EFFECTS.map((ef) => {

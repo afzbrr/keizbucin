@@ -149,6 +149,7 @@ export function useMusicSync(options: {
   const isRemoteSyncRef = useRef(false);
   const remoteGuardTimerRef = useRef<number | null>(null);
   const lastAppliedStampRef = useRef<string>('');
+  const userInitiatedPlayRef = useRef(false);
 
   queueRef.current = queue;
   activeSongRef.current = activeSong;
@@ -283,6 +284,13 @@ export function useMusicSync(options: {
       const targetSec = computeMusicTargetTime(state);
       setCurrentTime(targetSec);
 
+      // Jangan pernah autoplay audio jika user belum menekan tombol Play di sesi ini
+      if (!userInitiatedPlayRef.current) {
+        setIsPlaying(false);
+        setLoadingAudio(false);
+        return;
+      }
+
       const audio = audioRef.current;
       const seq = ++playSeqRef.current;
 
@@ -398,6 +406,7 @@ export function useMusicSync(options: {
       actionType: MusicSyncState['action'] = 'change_song'
     ) => {
       if (!currentUser) return;
+      userInitiatedPlayRef.current = true;
       soundFX.playPop();
       setActiveSong(song);
       setCurrentTime(0);
@@ -467,8 +476,9 @@ export function useMusicSync(options: {
         };
         setActiveSong(mappedSong);
         setDuration(Math.round((initial.duration_ms || 213000) / 1000));
-        setCurrentTime(computeMusicTargetTime(initial));
-        setIsPlaying(initial.is_playing);
+        setCurrentTime(initial.current_time || 0);
+        // Selalu mulai dalam kondisi pause saat web baru dibuka atau di-refresh
+        setIsPlaying(false);
       }
     });
 
@@ -567,7 +577,7 @@ export function useMusicSync(options: {
         height: 1,
         width: 1,
         playerVars: {
-          autoplay: 1,
+          autoplay: 0,
           controls: 0,
           rel: 0,
           playsinline: 1,
@@ -584,10 +594,12 @@ export function useMusicSync(options: {
             } catch {
               // ignore
             }
-            if (pendingStateRef.current) {
+            if (pendingStateRef.current && userInitiatedPlayRef.current) {
               const st = pendingStateRef.current;
               pendingStateRef.current = null;
               applyRemoteMusicState(st, true);
+            } else {
+              pendingStateRef.current = null;
             }
           },
           onStateChange: (ev) => {
@@ -713,16 +725,45 @@ export function useMusicSync(options: {
       const song = activeSongRef.current;
       if (!song) {
         if (nextPlaying && queueRef.current.length > 0) {
+          userInitiatedPlayRef.current = true;
           await playSongNow(queueRef.current[0], 'change_song');
         }
         return;
       }
 
+      userInitiatedPlayRef.current = nextPlaying;
       soundFX.playClick();
       const cur = getActiveTime();
       lockRemoteGuard(550);
 
       if (
+        nextPlaying &&
+        (!audioRef.current?.src || backendRef.current !== 'audio') &&
+        loadedVideoIdRef.current !== (song.youtube_video_id || musicSyncRef.current?.videoId || '')
+      ) {
+        const vid = song.youtube_video_id || musicSyncRef.current?.videoId || '';
+        if (vid) {
+          applyRemoteMusicState(
+            {
+              id: 1,
+              youtube_url: `https://www.youtube.com/watch?v=${vid}`,
+              videoId: vid,
+              title: song.title,
+              artist: song.artist,
+              thumbnail: song.artwork,
+              duration_ms: song.duration_ms || 213000,
+              is_playing: true,
+              current_time: cur,
+              updated_by: currentUser,
+              updated_at: new Date().toISOString(),
+              action: 'play',
+            },
+            true
+          );
+        } else {
+          await playSongNow(song, 'play');
+        }
+      } else if (
         backendRef.current === 'audio' &&
         audioRef.current &&
         audioRef.current.src
@@ -837,11 +878,13 @@ export function useMusicSync(options: {
     soundFX.playHeartBurst();
     const st = musicSyncRef.current;
     if (!st) return;
+    userInitiatedPlayRef.current = true;
     applyRemoteMusicState(st, true);
   };
 
   const forceUnmute = () => {
     soundFX.playClick();
+    userInitiatedPlayRef.current = true;
     if (backendRef.current === 'audio' && audioRef.current) {
       audioRef.current.muted = false;
       audioRef.current.volume = 1;

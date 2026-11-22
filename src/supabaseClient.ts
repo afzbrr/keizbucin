@@ -1207,11 +1207,14 @@ export async function sendChatMessage(
 
   const sb = activeClient;
   if (!sb) {
+    const noClientErr =
+      'ERROR: Supabase belum terhubung | details: activeClient null | hint: Cek konfigurasi URL & Anon Key Supabase | code: NO_CLIENT';
+    console.log('[KEIZ Chat INSERT error]', { message: noClientErr }, JSON.stringify(newMsg));
     return {
       ...newMsg,
       sending: false,
       failed: true,
-      errorDetails: 'Supabase belum terhubung',
+      errorDetails: noClientErr,
     };
   }
 
@@ -1283,6 +1286,7 @@ export async function sendChatMessage(
     } | null = null;
 
     for (let attempt = 0; attempt < 6; attempt++) {
+      console.log('[KEIZ Chat INSERT attempt]', JSON.stringify(attemptPayload));
       const { data, error } = await sb
         .from('chat')
         .insert([attemptPayload])
@@ -1296,6 +1300,9 @@ export async function sendChatMessage(
       }
 
       lastError = error;
+      console.log('[KEIZ Chat INSERT error object]', error);
+      console.log('[KEIZ Chat INSERT failed payload]', JSON.stringify(attemptPayload));
+
       const errMsg = String(error?.message || '');
       const missingColMatch =
         errMsg.match(/Could not find the '([^']+)' column/i) ||
@@ -1322,19 +1329,18 @@ export async function sendChatMessage(
     }
 
     if (lastError || !insertedRow) {
-      console.error(
-        '[KEIZ Chat INSERT error]',
-        lastError?.message,
-        lastError?.details,
-        lastError?.hint,
-        lastError?.code
-      );
+      const formattedErr = `ERROR: ${lastError?.message ?? '-'} | details: ${
+        lastError?.details ?? '-'
+      } | hint: ${lastError?.hint ?? '-'} | code: ${lastError?.code ?? '-'}`;
+      console.log('[KEIZ Chat INSERT final error]', lastError);
+      console.log('[KEIZ Chat INSERT final payload]', JSON.stringify(attemptPayload));
+      console.error('[KEIZ Chat INSERT error]', formattedErr);
       emitSupabaseError('Gagal kirim chat ke Supabase!');
       return {
         ...newMsg,
         sending: false,
         failed: true,
-        errorDetails: lastError?.message || 'Gagal menyimpan chat ke Supabase',
+        errorDetails: formattedErr,
       };
     }
 
@@ -1356,13 +1362,16 @@ export async function sendChatMessage(
     localChannel?.postMessage({ type: 'chat_update', payload: savedMsg });
     return savedMsg;
   } catch (err) {
-    console.error('[KEIZ Chat INSERT exception]', err);
+    console.log('[KEIZ Chat INSERT exception object]', err);
+    console.log('[KEIZ Chat INSERT exception payload]', JSON.stringify(newMsg));
+    const msg = err instanceof Error ? err.message : String(err);
+    const formattedErr = `ERROR: ${msg} | details: - | hint: - | code: EXCEPTION`;
     emitSupabaseError('Gagal kirim chat ke Supabase!');
     return {
       ...newMsg,
       sending: false,
       failed: true,
-      errorDetails: err instanceof Error ? err.message : 'Gagal kirim chat',
+      errorDetails: formattedErr,
     };
   }
 }

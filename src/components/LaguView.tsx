@@ -3,7 +3,6 @@ import {
   ArrowLeft,
   Headphones,
   Heart,
-  Info,
   Pause,
   Play,
   Plus,
@@ -16,7 +15,6 @@ import {
 } from 'lucide-react';
 import { sendChatMessage } from '../supabaseClient';
 import { soundFX } from '../sound';
-import { PWAInstallButton } from './PWAInstallButton';
 import type {
   CoupleProfile,
   MusicSyncState,
@@ -479,15 +477,6 @@ export const LaguView: React.FC<LaguViewProps> = ({
             </button>
           </div>
         </div>
-      </div>
-
-      {/* PWA Install Shortcut + Tips Background Playback */}
-      <PWAInstallButton variant="compact" />
-      <div className="flex items-start gap-2.5 rounded-2xl border border-[#FFD6E7] bg-[#FFF8FB] px-3.5 py-2.5 text-[11px] font-semibold leading-relaxed text-[#5C3A49]">
-        <Info className="mt-0.5 h-4 w-4 shrink-0 text-[#E91E7A]" />
-        <p>
-          Tips: Install aplikasi ini ke Home Screen dan jangan swipe / tutup aplikasinya dari Recent Apps agar lagu tetap jalan. Kalau tab browser ditutup total, lagu akan berhenti karena itu aturan browser.
-        </p>
       </div>
 
       {/* Tab Pills */}

@@ -28,7 +28,6 @@ import { LaguView } from './components/LaguView';
 import { LoginView } from './components/LoginView';
 import { NobarView } from './components/NobarView';
 import { ProfilView } from './components/ProfilView';
-import { PWAInstallButton } from './components/PWAInstallButton';
 import { Sticker3D } from './components/Sticker3D';
 import { SupabaseConfigCard } from './components/SupabaseConfigCard';
 import { UnekUnekView } from './components/UnekUnekView';
@@ -660,7 +659,7 @@ export default function App() {
         /* MAIN CENTERED CONTAINER MAX 430PX */
         <div
           className={`relative z-10 mx-auto flex min-h-screen w-full max-w-[430px] flex-col px-4 ${
-            music.activeSong ? 'pb-40' : 'pb-24'
+            section === 'lagu' && music.isPlaying && music.activeSong ? 'pb-40' : 'pb-24'
           } ${pelukActive ? 'animate-screen-shake' : ''}`}
         >
           {/* HOME VIEW */}
@@ -811,7 +810,7 @@ export default function App() {
                         Call Berdua
                       </p>
                       <p className="text-[12px] font-semibold leading-tight text-[#8A6A7A]">
-                        Telpon + voice changer
+                        Telepon mesra berdua
                       </p>
                     </div>
                   </button>
@@ -939,11 +938,8 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Install KEIZ BUCIN as PWA on Home Screen */}
-              <PWAInstallButton variant="card" />
-
               {/* Footer Home */}
-              <footer className="pt-2 text-center text-[11px] font-bold text-[#9A7A8A]">
+              <footer className="pt-3 text-center text-[11px] font-bold text-[#9A7A8A]">
                 KEIZ BUCIN - 28 Agustus 2026
               </footer>
             </div>
@@ -1032,8 +1028,8 @@ export default function App() {
             </div>
           )}
 
-          {/* Persistent Global Mini Player above Bottom Navbar across all pages */}
-          {music.activeSong && (
+          {/* Mini Player hanya muncul di halaman Musik saat lagu sedang diputar */}
+          {section === 'lagu' && music.isPlaying && music.activeSong && (
             <div className="fixed bottom-[76px] left-1/2 z-40 w-[calc(100%-24px)] max-w-[406px] -translate-x-1/2">
               <div
                 onClick={() => openSection('lagu')}
