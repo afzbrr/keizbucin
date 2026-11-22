@@ -21,6 +21,7 @@ import { resolveYouTubeVideoId } from '../hooks/useMusicSync';
 import {
   addPostingan,
   fetchPostingan,
+  fetchProfile,
   saveProfile,
   subscribeRealtime,
 } from '../supabaseClient';
@@ -111,6 +112,9 @@ export const ProfilView: React.FC<ProfilViewProps> = ({
   onUpdateProfile,
   onLogout,
 }) => {
+  // Active profile tab: AKU (currentUser) or PASANGAN (partnerRole)
+  const [viewingRole, setViewingRole] = useState<Role>(currentUser);
+
   const [showEdit, setShowEdit] = useState(false);
   const [draftName, setDraftName] = useState('');
   const [draftBio, setDraftBio] = useState('');
@@ -145,26 +149,71 @@ export const ProfilView: React.FC<ProfilViewProps> = ({
   const ytReadyRef = useRef(false);
   const pendingVidRef = useRef<string | null>(null);
   const loadedSongRef = useRef<string>('');
+  const onUpdateProfileRef = useRef(onUpdateProfile);
+  onUpdateProfileRef.current = onUpdateProfile;
+
+  useEffect(() => {
+    setViewingRole(currentUser);
+  }, [currentUser]);
 
   const isFaiz = currentUser === 'faiz';
+  const partnerRole: Role = isFaiz ? 'kenat' : 'faiz';
+  const isViewingSelf = viewingRole === currentUser;
+
+  // Own profile info (used in AKU avatar & edit modals)
   const myName = isFaiz ? profile.faizName : profile.kenatName;
-  const partnerName = isFaiz ? profile.kenatName : profile.faizName;
   const myPhoto = isFaiz ? profile.faizPhoto : profile.kenatPhoto;
-  const partnerPhoto = isFaiz ? profile.kenatPhoto : profile.faizPhoto;
+  const myBanner = isFaiz ? profile.faizBanner : profile.kenatBanner;
   const myBio = isFaiz ? profile.faizBio : profile.kenatBio;
-  const mySong = isFaiz ? profile.faizSong : profile.kenatSong;
+
+  // Partner avatar info (always shown on right PASANGAN circle)
+  const partnerName = isFaiz ? profile.kenatName : profile.faizName;
+  const partnerPhoto = isFaiz ? profile.kenatPhoto : profile.faizPhoto;
+
+  // Viewed profile info (switches cleanly between AKU and PASANGAN)
+  const viewedIsFaiz = viewingRole === 'faiz';
+  const viewedName = viewedIsFaiz ? profile.faizName : profile.kenatName;
+  const viewedPartnerName = viewedIsFaiz ? profile.kenatName : profile.faizName;
+  const viewedPhoto = viewedIsFaiz ? profile.faizPhoto : profile.kenatPhoto;
+  const viewedBanner = viewedIsFaiz ? profile.faizBanner : profile.kenatBanner;
+  const viewedBio = viewedIsFaiz ? profile.faizBio : profile.kenatBio;
+  const viewedSong = viewedIsFaiz ? profile.faizSong : profile.kenatSong;
+
+  const viewedPosts = posts.filter((p) => (p.author || 'faiz') === viewingRole);
 
   const showToastMsg = (msg: string) => {
     setToast(msg);
     setTimeout(() => setToast(null), 2400);
   };
 
-  // Load & subscribe posts in real-time via Supabase postingan_keiz
+  const handleSwitchProfile = (targetRole: Role) => {
+    if (targetRole === viewingRole) return;
+    soundFX.playPop();
+    try {
+      ytPlayerRef.current?.pauseVideo();
+    } catch {
+      // ignore
+    }
+    setSongPlaying(false);
+    setSongLoading(false);
+    loadedSongRef.current = '';
+    setShowSongMenu(false);
+    setShowEdit(false);
+    setPhotoPrompt(null);
+    setViewingRole(targetRole);
+    void fetchProfile().then((next) => onUpdateProfileRef.current(next));
+  };
+
+  // Load & subscribe posts & profile in real-time via Supabase
   useEffect(() => {
-    fetchPostingan().then(setPosts);
+    void fetchProfile().then((next) => onUpdateProfileRef.current(next));
+    void fetchPostingan().then(setPosts);
     const unsub = subscribeRealtime({
       onPostingan: () => {
-        fetchPostingan().then(setPosts);
+        void fetchPostingan().then(setPosts);
+      },
+      onProfil: () => {
+        void fetchProfile().then((next) => onUpdateProfileRef.current(next));
       },
     });
     return unsub;
@@ -279,6 +328,7 @@ export const ProfilView: React.FC<ProfilViewProps> = ({
   }, [songQuery, showSongPicker]);
 
   const openEditSheet = () => {
+    if (!isViewingSelf) return;
     soundFX.playClick();
     setDraftName(myName);
     setDraftBio(myBio);
@@ -290,15 +340,19 @@ export const ProfilView: React.FC<ProfilViewProps> = ({
   ) => {
     const file = e.target.files?.[0];
     e.target.value = '';
-    if (!file) return;
+    if (!file || !isViewingSelf) return;
     const compressed = await compressImageFile(file, 720);
     if (!compressed) return;
     soundFX.playHeartBurst();
     const updated: CoupleProfile = isFaiz
       ? { ...profile, faizPhoto: compressed }
       : { ...profile, kenatPhoto: compressed };
-    await saveProfile(updated);
-    onUpdateProfile(updated);
+    await saveProfile(updated, currentUser);
+    const fresh = await fetchProfile();
+    onUpdateProfile({
+      ...fresh,
+      ...(isFaiz ? { faizPhoto: compressed } : { kenatPhoto: compressed }),
+    });
     setPhotoPrompt(null);
     showToastMsg(`Foto profil ${myName} keganti 💖`);
   };
@@ -308,19 +362,26 @@ export const ProfilView: React.FC<ProfilViewProps> = ({
   ) => {
     const file = e.target.files?.[0];
     e.target.value = '';
-    if (!file) return;
+    if (!file || !isViewingSelf) return;
     const compressed = await compressImageFile(file, 1080);
     if (!compressed) return;
     soundFX.playHeartBurst();
-    const updated: CoupleProfile = { ...profile, bannerPhoto: compressed };
-    await saveProfile(updated);
-    onUpdateProfile(updated);
+    const updated: CoupleProfile = isFaiz
+      ? { ...profile, faizBanner: compressed }
+      : { ...profile, kenatBanner: compressed };
+    await saveProfile(updated, currentUser);
+    const fresh = await fetchProfile();
+    onUpdateProfile({
+      ...fresh,
+      ...(isFaiz ? { faizBanner: compressed } : { kenatBanner: compressed }),
+    });
     setPhotoPrompt(null);
-    showToastMsg('Foto latar belakang berhasil diganti 💖');
+    showToastMsg(`Foto latar ${myName} berhasil diganti 💖`);
   };
 
   const handleSaveEdit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!isViewingSelf) return;
     soundFX.playHeartBurst();
     const cleanedName = draftName.trim() || (isFaiz ? 'Faiz' : 'Kenat');
     const cleanedBio =
@@ -328,13 +389,20 @@ export const ProfilView: React.FC<ProfilViewProps> = ({
     const updated: CoupleProfile = isFaiz
       ? { ...profile, faizName: cleanedName, faizBio: cleanedBio }
       : { ...profile, kenatName: cleanedName, kenatBio: cleanedBio };
-    await saveProfile(updated);
-    onUpdateProfile(updated);
+    await saveProfile(updated, currentUser);
+    const fresh = await fetchProfile();
+    onUpdateProfile({
+      ...fresh,
+      ...(isFaiz
+        ? { faizName: cleanedName, faizBio: cleanedBio }
+        : { kenatName: cleanedName, kenatBio: cleanedBio }),
+    });
     setShowEdit(false);
     showToastMsg(`Profil ${cleanedName} berhasil disimpan 💖`);
   };
 
   const handleSelectProfileSong = async (track: ITunesTrack) => {
+    if (!isViewingSelf) return;
     soundFX.playHeartBurst();
     const label = `${track.trackName} - ${track.artistName}`;
     const art = track.artworkUrl100.replace('100x100', '300x300');
@@ -348,7 +416,7 @@ export const ProfilView: React.FC<ProfilViewProps> = ({
     const updated: CoupleProfile = isFaiz
       ? { ...profile, faizSong: label }
       : { ...profile, kenatSong: label };
-    await saveProfile(updated);
+    await saveProfile(updated, currentUser);
     onUpdateProfile(updated);
     loadedSongRef.current = '';
     setSongPlaying(false);
@@ -359,6 +427,7 @@ export const ProfilView: React.FC<ProfilViewProps> = ({
   };
 
   const handleDeleteProfileSong = async () => {
+    if (!isViewingSelf) return;
     soundFX.playClick();
     try {
       ytPlayerRef.current?.pauseVideo();
@@ -382,13 +451,13 @@ export const ProfilView: React.FC<ProfilViewProps> = ({
     const updated: CoupleProfile = isFaiz
       ? { ...profile, faizSong: '' }
       : { ...profile, kenatSong: '' };
-    await saveProfile(updated);
+    await saveProfile(updated, currentUser);
     onUpdateProfile(updated);
     showToastMsg('Lagu profil dihapus');
   };
 
   const handleTogglePlayProfileSong = async () => {
-    if (!mySong) return;
+    if (!viewedSong) return;
     soundFX.playPop();
     const player = ytPlayerRef.current;
 
@@ -402,7 +471,7 @@ export const ProfilView: React.FC<ProfilViewProps> = ({
       return;
     }
 
-    if (loadedSongRef.current === mySong && player && ytReadyRef.current) {
+    if (loadedSongRef.current === viewedSong && player && ytReadyRef.current) {
       try {
         player.unMute();
         player.setVolume(100);
@@ -415,13 +484,13 @@ export const ProfilView: React.FC<ProfilViewProps> = ({
     }
 
     setSongLoading(true);
-    const vid = await lookupYouTubeVideoId(mySong);
+    const vid = await lookupYouTubeVideoId(viewedSong);
     if (!vid) {
       setSongLoading(false);
       showToastMsg('Lagu lagi susah dimuat, coba sekali lagi ya');
       return;
     }
-    loadedSongRef.current = mySong;
+    loadedSongRef.current = viewedSong;
     if (player && ytReadyRef.current) {
       try {
         player.unMute();
@@ -447,7 +516,7 @@ export const ProfilView: React.FC<ProfilViewProps> = ({
 
   const handleCreatePost = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!postPhotoUrl) return;
+    if (!postPhotoUrl || !isViewingSelf) return;
     soundFX.playHeartBurst();
     const saved = await addPostingan({
       author: currentUser,
@@ -465,12 +534,12 @@ export const ProfilView: React.FC<ProfilViewProps> = ({
 
   const handleShareProfile = () => {
     soundFX.playPop();
-    const shareText = `KEIZ BUCIN · ${myName} (Pasangannya ${partnerName}) · Tanggal pacaran 28 Agustus 2026`;
+    const shareText = `KEIZ BUCIN · ${viewedName} (Pasangannya ${viewedPartnerName}) · Tanggal pacaran 28 Agustus 2026`;
     navigator.clipboard?.writeText(shareText).catch(() => {});
     showToastMsg('Info profil disalin ke clipboard 💖');
   };
 
-  const currentSongArt = songArtMap[currentUser];
+  const viewedSongArt = songArtMap[viewingRole];
 
   return (
     <div
@@ -516,7 +585,7 @@ export const ProfilView: React.FC<ProfilViewProps> = ({
         className="hidden"
       />
 
-      {/* Top Bar: < | Profil Faiz / Profil Kenat | Edit + Settings */}
+      {/* Top Bar: < | Profil [ViewedName] | (Edit + Settings only when viewing own profile) */}
       <div className="flex h-12 items-center justify-between">
         <button
           type="button"
@@ -527,29 +596,33 @@ export const ProfilView: React.FC<ProfilViewProps> = ({
           <ArrowLeft className="h-5 w-5" />
         </button>
         <h2 className="font-display text-[18px] font-extrabold text-[#2D0A1E]">
-          Profil {myName}
+          Profil {viewedName}
         </h2>
-        <div className="flex items-center gap-1.5">
-          <button
-            type="button"
-            onClick={() => {
-              soundFX.playClick();
-              setShowProfilSettings(true);
-            }}
-            aria-label="Settings Supabase"
-            className="btn-bucin flex h-10 w-10 items-center justify-center rounded-full border border-[#FFD6E7] bg-white text-[#8A6A7A] cursor-pointer"
-          >
-            <Settings className="h-4 w-4" />
-          </button>
-          <button
-            type="button"
-            onClick={openEditSheet}
-            aria-label="Edit profil"
-            className="btn-bucin flex h-10 w-10 items-center justify-center rounded-full border border-[#FFD6E7] bg-white text-[#E91E7A] cursor-pointer"
-          >
-            <Pencil className="h-4 w-4" />
-          </button>
-        </div>
+        {isViewingSelf ? (
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => {
+                soundFX.playClick();
+                setShowProfilSettings(true);
+              }}
+              aria-label="Settings Supabase"
+              className="btn-bucin flex h-10 w-10 items-center justify-center rounded-full border border-[#FFD6E7] bg-white text-[#8A6A7A] cursor-pointer"
+            >
+              <Settings className="h-4 w-4" />
+            </button>
+            <button
+              type="button"
+              onClick={openEditSheet}
+              aria-label="Edit profil"
+              className="btn-bucin flex h-10 w-10 items-center justify-center rounded-full border border-[#FFD6E7] bg-white text-[#E91E7A] cursor-pointer"
+            >
+              <Pencil className="h-4 w-4" />
+            </button>
+          </div>
+        ) : (
+          <div className="w-10" aria-hidden="true" />
+        )}
       </div>
 
       {toast && (
@@ -560,43 +633,67 @@ export const ProfilView: React.FC<ProfilViewProps> = ({
 
       {/* Main Profile Card */}
       <div className="keiz-sticker-card overflow-hidden bg-white">
-        {/* Tappable Banner Photo + Camera Pill Top-Right */}
+        {/* Per-User Cover / Banner Photo */}
         <div
           onClick={() => {
+            if (!isViewingSelf) return;
             soundFX.playClick();
             setPhotoPrompt('banner');
           }}
-          role="button"
-          tabIndex={0}
+          role={isViewingSelf ? 'button' : undefined}
+          tabIndex={isViewingSelf ? 0 : undefined}
           onKeyDown={(e) => {
-            if (e.key === 'Enter') setPhotoPrompt('banner');
+            if (isViewingSelf && e.key === 'Enter') setPhotoPrompt('banner');
           }}
-          className="group relative h-[148px] w-full overflow-hidden cursor-pointer"
+          className={`group relative h-[148px] w-full overflow-hidden ${
+            isViewingSelf ? 'cursor-pointer' : ''
+          }`}
         >
-          <img
-            src={profile.bannerPhoto}
-            alt="Foto latar profil"
-            className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
-          />
-          <div className="absolute inset-0 bg-gradient-to-t from-[#FF2E7E]/55 via-[#FF7AB8]/25 to-transparent" />
+          {viewedBanner ? (
+            <>
+              <img
+                key={`${viewingRole}-${viewedBanner.slice(0, 32)}`}
+                src={viewedBanner}
+                alt={`Foto latar profil ${viewedName}`}
+                className={`h-full w-full object-cover transition-transform duration-300 ${
+                  isViewingSelf ? 'group-hover:scale-105' : ''
+                }`}
+              />
+              <div className="absolute inset-0 bg-gradient-to-t from-[#2D0A1E]/40 via-transparent to-transparent" />
+            </>
+          ) : (
+            <div
+              className={`flex h-full w-full flex-col items-center justify-center ${
+                viewedIsFaiz
+                  ? 'bg-gradient-to-br from-[#60A5FA] via-[#93C5FD] to-[#DBEAFE]'
+                  : 'bg-gradient-to-br from-[#FF4D8D] via-[#FF8EC4] to-[#FFE3EE]'
+              }`}
+            >
+              <span className="rounded-full bg-white/75 px-3 py-1 text-[11px] font-extrabold text-[#2D0A1E]/80 shadow-sm backdrop-blur-sm">
+                Belum ada latar
+              </span>
+            </div>
+          )}
 
-          {/* Top-right camera pill + Tap buat ganti latar */}
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              soundFX.playClick();
-              setPhotoPrompt('banner');
-            }}
-            className="btn-bucin absolute right-2.5 top-2.5 z-10 inline-flex items-center gap-1.5 rounded-full bg-black/45 px-2.5 py-1 text-[10px] font-bold text-white backdrop-blur-sm cursor-pointer"
-          >
-            <Camera className="h-3.5 w-3.5" />
-            <span>Tap buat ganti latar</span>
-          </button>
+          {/* Top-right camera pill + Tap buat ganti latar (ONLY when viewing own profile) */}
+          {isViewingSelf && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                soundFX.playClick();
+                setPhotoPrompt('banner');
+              }}
+              className="btn-bucin absolute right-2.5 top-2.5 z-10 inline-flex items-center gap-1.5 rounded-full bg-black/45 px-2.5 py-1 text-[10px] font-bold text-white backdrop-blur-sm cursor-pointer"
+            >
+              <Camera className="h-3.5 w-3.5" />
+              <span>Tap buat ganti latar</span>
+            </button>
+          )}
 
           <svg
             viewBox="0 0 240 80"
-            className="pointer-events-none absolute inset-0 h-full w-full opacity-45"
+            className="pointer-events-none absolute inset-0 h-full w-full opacity-40"
           >
             <path
               d="M30 35 C30 35 20 28 20 22 C20 18 23 16 26 16 C28 16 29.5 17 30 18.5 C30.5 17 32 16 34 16 C37 16 40 18 40 22 C40 28 30 35 30 35 Z"
@@ -614,100 +711,123 @@ export const ProfilView: React.FC<ProfilViewProps> = ({
         </div>
 
         <div className="px-4 pb-5">
-          {/* Self BIG photo (AKU + Camera button) & Partner SMALL photo (PASANGAN, read-only) */}
+          {/* Switchable 2 Avatar Tabs: Left = AKU, Right = PASANGAN */}
           <div className="-mt-12 flex items-end gap-3.5">
+            {/* Tab AKU */}
             <button
               type="button"
               onClick={() => {
-                soundFX.playClick();
-                setPhotoPrompt('avatar');
+                if (!isViewingSelf) {
+                  handleSwitchProfile(currentUser);
+                } else {
+                  soundFX.playClick();
+                  setPhotoPrompt('avatar');
+                }
               }}
-              aria-label="Ganti Foto Profil"
-              className="btn-bucin relative cursor-pointer"
+              aria-label={`Lihat profil ${myName} (Aku)`}
+              aria-pressed={isViewingSelf}
+              className="btn-bucin relative cursor-pointer transition-all"
             >
               <img
                 src={myPhoto}
                 alt={myName}
-                className={`h-[88px] w-[88px] rounded-full border-4 bg-white object-cover shadow-lg ${
-                  isFaiz ? 'border-[#3B82F6]' : 'border-[#FF4D8D]'
+                className={`rounded-full bg-white object-cover transition-all ${
+                  isViewingSelf
+                    ? 'h-[88px] w-[88px] border-4 border-[#3B82F6] ring-4 ring-[#3B82F6]/30 shadow-lg opacity-100'
+                    : 'h-[64px] w-[64px] border-[3px] border-[#E5D3DC] shadow-sm opacity-60 hover:opacity-85'
                 }`}
               />
               <span
-                className={`absolute -bottom-1.5 left-1/2 -translate-x-1/2 rounded-full border-2 border-white px-2.5 py-0.5 text-[9px] font-extrabold text-white shadow ${
-                  isFaiz ? 'bg-[#3B82F6]' : 'bg-[#FF4D8D]'
+                className={`absolute -bottom-1.5 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full border-2 border-white px-2.5 py-0.5 text-[9px] font-extrabold shadow transition-colors ${
+                  isViewingSelf
+                    ? 'bg-[#2563EB] text-white'
+                    : 'bg-[#9A7A8A] text-white/85'
                 }`}
               >
                 AKU
               </span>
-              {/* Small camera icon bottom-right of AKU photo */}
-              <span
-                className="absolute bottom-0 right-0 flex h-7 w-7 items-center justify-center rounded-full border-2 border-white bg-[#2D0A1E] text-white shadow-md"
-                aria-hidden="true"
-              >
-                <Camera className="h-3.5 w-3.5" />
-              </span>
+              {isViewingSelf && (
+                <span
+                  className="absolute bottom-0 right-0 flex h-7 w-7 items-center justify-center rounded-full border-2 border-white bg-[#2D0A1E] text-white shadow-md"
+                  aria-hidden="true"
+                >
+                  <Camera className="h-3.5 w-3.5" />
+                </span>
+              )}
             </button>
 
-            {/* Partner photo — strictly read-only */}
-            <div className="relative pb-0.5">
+            {/* Tab PASANGAN */}
+            <button
+              type="button"
+              onClick={() => handleSwitchProfile(partnerRole)}
+              aria-label={`Lihat profil ${partnerName} (Pasangan)`}
+              aria-pressed={!isViewingSelf}
+              className="btn-bucin relative pb-0.5 cursor-pointer transition-all"
+            >
               <img
                 src={partnerPhoto}
                 alt={partnerName}
-                className={`h-[54px] w-[54px] rounded-full border-[3px] bg-white object-cover shadow-md ${
-                  isFaiz ? 'border-[#FF4D8D]' : 'border-[#3B82F6]'
+                className={`rounded-full bg-white object-cover transition-all ${
+                  !isViewingSelf
+                    ? 'h-[88px] w-[88px] border-4 border-[#3B82F6] ring-4 ring-[#3B82F6]/30 shadow-lg opacity-100'
+                    : 'h-[58px] w-[58px] border-[3px] border-[#E5D3DC] shadow-sm opacity-60 hover:opacity-85'
                 }`}
               />
               <span
-                className={`absolute -bottom-1.5 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full border-2 border-white px-2 py-0.5 text-[8px] font-extrabold text-white shadow ${
-                  isFaiz ? 'bg-[#FF4D8D]' : 'bg-[#3B82F6]'
+                className={`absolute -bottom-1.5 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full border-2 border-white px-2 py-0.5 text-[8px] font-extrabold shadow transition-colors ${
+                  !isViewingSelf
+                    ? 'bg-[#2563EB] text-white'
+                    : 'bg-[#9A7A8A] text-white/85'
                 }`}
               >
                 PASANGAN
               </span>
-            </div>
+            </button>
           </div>
 
           {/* Name + Pasangannya + Bio + Tanggal Pacaran */}
           <div className="mt-4">
             <h3 className="font-display text-[24px] font-extrabold leading-tight text-[#2D0A1E]">
-              {myName}
+              {viewedName}
             </h3>
             <span
               className={`mt-1 inline-block rounded-full px-3 py-1 text-[11px] font-extrabold ${
-                isFaiz
+                viewedIsFaiz
                   ? 'bg-[#EFF6FF] text-[#2563EB]'
                   : 'bg-[#FFE3EE] text-[#D81B6E]'
               }`}
             >
-              Pasangannya {partnerName}
+              Pasangannya {viewedPartnerName}
             </span>
 
             <div className="mt-2.5 flex items-center justify-between gap-2">
               <p className="text-[13px] font-semibold text-[#5C3A49]">
-                {myBio}
+                {viewedBio}
               </p>
-              <button
-                type="button"
-                onClick={openEditSheet}
-                aria-label="Edit bio"
-                className="shrink-0 rounded-full p-1.5 text-[#E91E7A] hover:bg-[#FFF2F7] cursor-pointer"
-              >
-                <Pencil className="h-3.5 w-3.5" />
-              </button>
+              {isViewingSelf && (
+                <button
+                  type="button"
+                  onClick={openEditSheet}
+                  aria-label="Edit bio"
+                  className="shrink-0 rounded-full p-1.5 text-[#E91E7A] hover:bg-[#FFF2F7] cursor-pointer"
+                >
+                  <Pencil className="h-3.5 w-3.5" />
+                </button>
+              )}
             </div>
             <p className="mt-1 text-[11px] font-bold text-[#9A7A8A]">
               Tanggal pacaran 28 Agustus 2026
             </p>
           </div>
 
-          {/* Card Lagu Faiz / Lagu Kenat (Kosong Awalnya, Pilih Manual + Ganti/Hapus) */}
+          {/* Card Lagu [ViewedName] */}
           <div className="relative mt-4 rounded-[18px] border border-[#FFD6E7] bg-[#FFE9F1] p-3.5">
-            {mySong ? (
+            {viewedSong ? (
               <div className="flex items-center gap-3">
-                {currentSongArt ? (
+                {viewedSongArt ? (
                   <img
-                    src={currentSongArt}
-                    alt={mySong}
+                    src={viewedSongArt}
+                    alt={viewedSong}
                     referrerPolicy="no-referrer"
                     className={`h-11 w-11 shrink-0 rounded-xl object-cover shadow-sm ${
                       songPlaying ? 'animate-pulse' : ''
@@ -720,10 +840,10 @@ export const ProfilView: React.FC<ProfilViewProps> = ({
                 )}
                 <div className="min-w-0 flex-1">
                   <p className="text-[10px] font-extrabold tracking-wider text-[#E91E7A]">
-                    LAGU {myName.toUpperCase()}
+                    LAGU {viewedName.toUpperCase()}
                   </p>
                   <p className="truncate text-[13px] font-extrabold text-[#2D0A1E]">
-                    {mySong}
+                    {viewedSong}
                   </p>
                   {(songPlaying || songLoading) && (
                     <p className="text-[10px] font-bold text-[#FF2E7E]">
@@ -743,90 +863,96 @@ export const ProfilView: React.FC<ProfilViewProps> = ({
                     <Play className="ml-0.5 h-4 w-4" />
                   )}
                 </button>
-                <div className="relative">
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      soundFX.playClick();
-                      setShowSongMenu((v) => !v);
-                    }}
-                    aria-label="Menu lagu profil"
-                    className="flex h-8 w-8 items-center justify-center rounded-full bg-white/80 text-[#6E5460] shadow-sm cursor-pointer"
-                  >
-                    <MoreVertical className="h-4 w-4" />
-                  </button>
-                  {showSongMenu && (
-                    <div
-                      onClick={(e) => e.stopPropagation()}
-                      className="animate-bubble-pop absolute right-0 top-9 z-20 w-36 overflow-hidden rounded-2xl border border-[#FFD6E7] bg-white py-1 shadow-xl"
+                {isViewingSelf && (
+                  <div className="relative">
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        soundFX.playClick();
+                        setShowSongMenu((v) => !v);
+                      }}
+                      aria-label="Menu lagu profil"
+                      className="flex h-8 w-8 items-center justify-center rounded-full bg-white/80 text-[#6E5460] shadow-sm cursor-pointer"
                     >
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setShowSongMenu(false);
-                          setShowSongPicker(true);
-                        }}
-                        className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-bold text-[#2D0A1E] hover:bg-[#FFF2F7] cursor-pointer"
+                      <MoreVertical className="h-4 w-4" />
+                    </button>
+                    {showSongMenu && (
+                      <div
+                        onClick={(e) => e.stopPropagation()}
+                        className="animate-bubble-pop absolute right-0 top-9 z-20 w-36 overflow-hidden rounded-2xl border border-[#FFD6E7] bg-white py-1 shadow-xl"
                       >
-                        <Music2 className="h-3.5 w-3.5 text-[#E91E7A]" />
-                        <span>Ganti Lagu</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={handleDeleteProfileSong}
-                        className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-bold text-rose-600 hover:bg-rose-50 cursor-pointer"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                        <span>Hapus Lagu</span>
-                      </button>
-                    </div>
-                  )}
-                </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShowSongMenu(false);
+                            setShowSongPicker(true);
+                          }}
+                          className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-bold text-[#2D0A1E] hover:bg-[#FFF2F7] cursor-pointer"
+                        >
+                          <Music2 className="h-3.5 w-3.5 text-[#E91E7A]" />
+                          <span>Ganti Lagu</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleDeleteProfileSong}
+                          className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-bold text-rose-600 hover:bg-rose-50 cursor-pointer"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                          <span>Hapus Lagu</span>
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             ) : (
               <div className="flex items-center justify-between gap-3">
                 <div className="min-w-0 flex-1">
                   <p className="text-[10px] font-extrabold tracking-wider text-[#E91E7A]">
-                    LAGU {myName.toUpperCase()}
+                    LAGU {viewedName.toUpperCase()}
                   </p>
                   <p className="mt-0.5 text-xs font-bold text-[#5C3A49]">
                     Belum ada lagu
                   </p>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    soundFX.playPop();
-                    setShowSongPicker(true);
-                  }}
-                  className="btn-bucin inline-flex shrink-0 items-center gap-1 rounded-full bg-gradient-to-r from-[#FF2E7E] to-[#FF7AB8] px-3.5 py-2 text-xs font-extrabold text-white shadow-sm cursor-pointer"
-                >
-                  <Plus className="h-3.5 w-3.5" />
-                  <span>Tambah Lagu</span>
-                </button>
+                {isViewingSelf && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      soundFX.playPop();
+                      setShowSongPicker(true);
+                    }}
+                    className="btn-bucin inline-flex shrink-0 items-center gap-1 rounded-full bg-gradient-to-r from-[#FF2E7E] to-[#FF7AB8] px-3.5 py-2 text-xs font-extrabold text-white shadow-sm cursor-pointer"
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                    <span>Tambah Lagu</span>
+                  </button>
+                )}
               </div>
             )}
           </div>
 
-          {/* Section Postingan (Kosong awalnya, upload manual baru muncul grid) */}
+          {/* Section Postingan (filtered per viewed user) */}
           <div className="mt-5 border-t border-[#FFD6E7] pt-4">
             <div className="mb-2.5 flex items-center justify-between">
               <h4 className="text-[15px] font-extrabold text-[#2D0A1E]">
                 Postingan
               </h4>
-              {posts.length > 0 && (
+              {viewedPosts.length > 0 && (
                 <div className="flex items-center gap-3">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      soundFX.playClick();
-                      setShowPostModal(true);
-                    }}
-                    className="text-xs font-extrabold text-[#3B82F6] cursor-pointer"
-                  >
-                    + Tambah
-                  </button>
+                  {isViewingSelf && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        soundFX.playClick();
+                        setShowPostModal(true);
+                      }}
+                      className="text-xs font-extrabold text-[#3B82F6] cursor-pointer"
+                    >
+                      + Tambah
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() => onNavigate('galeri')}
@@ -838,7 +964,7 @@ export const ProfilView: React.FC<ProfilViewProps> = ({
               )}
             </div>
 
-            {posts.length === 0 ? (
+            {viewedPosts.length === 0 ? (
               <div className="rounded-[20px] border border-[#EDE6EA] bg-[#F7F3F5] p-6 text-center">
                 <Camera className="mx-auto h-9 w-9 text-[#B4A0AA]" />
                 <p className="mt-2.5 text-sm font-extrabold text-[#2D0A1E]">
@@ -847,23 +973,25 @@ export const ProfilView: React.FC<ProfilViewProps> = ({
                 <p className="mt-1 text-xs font-semibold text-[#8A6A7A]">
                   Momen pertama kalian bakal muncul di sini.
                 </p>
-                <button
-                  type="button"
-                  onClick={() => {
-                    soundFX.playPop();
-                    setPostPhotoUrl('');
-                    setPostCaption('');
-                    setShowPostModal(true);
-                  }}
-                  className="keiz-btn-primary btn-bucin mt-3.5 inline-flex min-h-[42px] items-center gap-1.5 px-5 text-xs cursor-pointer"
-                >
-                  <Plus className="h-4 w-4" />
-                  <span>Buat Postingan Pertama</span>
-                </button>
+                {isViewingSelf && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      soundFX.playPop();
+                      setPostPhotoUrl('');
+                      setPostCaption('');
+                      setShowPostModal(true);
+                    }}
+                    className="keiz-btn-primary btn-bucin mt-3.5 inline-flex min-h-[42px] items-center gap-1.5 px-5 text-xs cursor-pointer"
+                  >
+                    <Plus className="h-4 w-4" />
+                    <span>Buat Postingan Pertama</span>
+                  </button>
+                )}
               </div>
             ) : (
               <div className="grid grid-cols-2 gap-2.5">
-                {posts.slice(0, 6).map((p, idx) => (
+                {viewedPosts.slice(0, 6).map((p, idx) => (
                   <button
                     key={p.id}
                     type="button"
@@ -913,8 +1041,8 @@ export const ProfilView: React.FC<ProfilViewProps> = ({
         </button>
       </div>
 
-      {/* Popup: Ganti Foto Profil / Ganti Foto Latar */}
-      {photoPrompt && (
+      {/* Popup: Ganti Foto Profil / Ganti Foto Latar (Only own profile) */}
+      {isViewingSelf && photoPrompt && (
         <div
           onClick={() => setPhotoPrompt(null)}
           className="fixed inset-0 z-50 flex items-center justify-center bg-[#2D0A1E]/55 p-4 backdrop-blur-sm"
@@ -926,23 +1054,39 @@ export const ProfilView: React.FC<ProfilViewProps> = ({
             <h3 className="font-display text-lg font-extrabold text-[#2D0A1E]">
               {photoPrompt === 'avatar'
                 ? 'Ganti Foto Profil'
-                : 'Ganti Foto Latar'}
+                : `Ganti Foto Latar ${myName}`}
             </h3>
             <p className="mt-1 text-xs font-semibold text-[#8A6A7A]">
               {photoPrompt === 'avatar'
                 ? `Pilih foto baru buat profil ${myName} dari galeri HP`
-                : 'Pilih foto latar belakang baru dari galeri HP'}
+                : `Pilih foto latar belakang baru khusus buat profil ${myName}`}
             </p>
             <div className="mt-4 flex justify-center">
-              <img
-                src={photoPrompt === 'avatar' ? myPhoto : profile.bannerPhoto}
-                alt="Preview saat ini"
-                className={
-                  photoPrompt === 'avatar'
-                    ? 'h-24 w-24 rounded-full border-4 border-[#FFD6E7] object-cover shadow'
-                    : 'h-28 w-full rounded-2xl border-2 border-[#FFD6E7] object-cover shadow'
-                }
-              />
+              {photoPrompt === 'avatar' ? (
+                <img
+                  src={myPhoto}
+                  alt="Preview foto profil"
+                  className="h-24 w-24 rounded-full border-4 border-[#FFD6E7] object-cover shadow"
+                />
+              ) : myBanner ? (
+                <img
+                  src={myBanner}
+                  alt="Preview latar"
+                  className="h-28 w-full rounded-2xl border-2 border-[#FFD6E7] object-cover shadow"
+                />
+              ) : (
+                <div
+                  className={`flex h-28 w-full items-center justify-center rounded-2xl border-2 border-[#FFD6E7] ${
+                    isFaiz
+                      ? 'bg-gradient-to-br from-[#60A5FA] via-[#93C5FD] to-[#DBEAFE]'
+                      : 'bg-gradient-to-br from-[#FF4D8D] via-[#FF8EC4] to-[#FFE3EE]'
+                  }`}
+                >
+                  <span className="rounded-full bg-white/80 px-3 py-1 text-[11px] font-extrabold text-[#2D0A1E]">
+                    Belum ada latar
+                  </span>
+                </div>
+              )}
             </div>
             <div className="mt-4 flex flex-col gap-2">
               <button
@@ -973,7 +1117,7 @@ export const ProfilView: React.FC<ProfilViewProps> = ({
       )}
 
       {/* Popup: Tambah / Ganti Lagu (iTunes Search) */}
-      {showSongPicker && (
+      {isViewingSelf && showSongPicker && (
         <div
           onClick={() => setShowSongPicker(false)}
           className="fixed inset-0 z-50 flex items-end justify-center bg-[#2D0A1E]/55 backdrop-blur-sm sm:items-center sm:p-4"
@@ -1064,7 +1208,7 @@ export const ProfilView: React.FC<ProfilViewProps> = ({
       )}
 
       {/* Popup: Upload Postingan Pertama */}
-      {showPostModal && (
+      {isViewingSelf && showPostModal && (
         <div
           onClick={() => setShowPostModal(false)}
           className="fixed inset-0 z-50 flex items-end justify-center bg-[#2D0A1E]/55 backdrop-blur-sm sm:items-center sm:p-4"
@@ -1138,7 +1282,7 @@ export const ProfilView: React.FC<ProfilViewProps> = ({
       )}
 
       {/* Bottom Sheet: Edit Nama & Bio (Top-Right Pencil) */}
-      {showEdit && (
+      {isViewingSelf && showEdit && (
         <div
           onClick={() => setShowEdit(false)}
           className="fixed inset-0 z-50 flex items-end justify-center bg-[#2D0A1E]/45 backdrop-blur-sm sm:items-center sm:p-4"
@@ -1206,8 +1350,9 @@ export const ProfilView: React.FC<ProfilViewProps> = ({
           </form>
         </div>
       )}
+
       {/* Popup: Profil -> Settings (Cek Koneksi Supabase + Copy Link Web Vercel) */}
-      {showProfilSettings && (
+      {isViewingSelf && showProfilSettings && (
         <div
           onClick={() => setShowProfilSettings(false)}
           className="fixed inset-0 z-50 flex items-end justify-center bg-[#2D0A1E]/45 p-4 backdrop-blur-sm sm:items-center"

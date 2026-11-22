@@ -165,8 +165,8 @@ create policy "allow_all_lagu_keiz" on public.lagu_keiz for all using (true) wit
 -- ============================================================
 insert into public.users_keiz (id, username, password_hash, nama, foto_profil, foto_latar, bio, lagu_profil)
 values
-  ('faiz', 'faiz', 'faizkece18070528', 'Faiz', '/src/assets/images/avatar_faiz_1795263046125.jpg', '/src/assets/images/galeri_sunset_1795263046141.jpg', 'pacarnya kenat, paling sayang sama yang gemes', ''),
-  ('kenat', 'kenat', 'kenatgemaz07180528', 'Kenat', '/src/assets/images/avatar_kenat_1795263046413.jpg', '/src/assets/images/galeri_sunset_1795263046141.jpg', 'pacarnya faiz, cantik sedunia no debat', '')
+  ('faiz', 'faiz', 'faizkece18070528', 'Faiz', '/src/assets/images/avatar_faiz_1795263046125.jpg', '', 'pacarnya kenat, paling sayang sama yang gemes', ''),
+  ('kenat', 'kenat', 'kenatgemaz07180528', 'Kenat', '/src/assets/images/avatar_kenat_1795263046413.jpg', '', 'pacarnya faiz, cantik sedunia no debat', '')
 on conflict (id) do nothing;
 
 insert into public.nobar_sync (id, youtube_url, "videoId", title, is_playing, "current_time", playback_rate, updated_by, action)

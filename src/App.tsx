@@ -7,6 +7,8 @@ import {
   LogOut,
   MessageCircle,
   Music2,
+  Pause,
+  Play,
   Settings,
   User,
   Volume2,
@@ -26,6 +28,7 @@ import { LaguView } from './components/LaguView';
 import { LoginView } from './components/LoginView';
 import { NobarView } from './components/NobarView';
 import { ProfilView } from './components/ProfilView';
+import { PWAInstallButton } from './components/PWAInstallButton';
 import { Sticker3D } from './components/Sticker3D';
 import { SupabaseConfigCard } from './components/SupabaseConfigCard';
 import { UnekUnekView } from './components/UnekUnekView';
@@ -499,22 +502,30 @@ export default function App() {
 
   return (
     <div className="paper-texture relative min-h-screen w-full overflow-x-hidden bg-gradient-to-b from-[#FFF2F7] to-[#FFE4EF] text-[#2D0A1E]">
-      {/* Persistent 1x1 Hidden YouTube Music Player (never display:none so audio plays across pages & calls!) */}
+      {/* Persistent Global Audio + 1x1 Hidden YouTube Music Player (never unmounts across pages!) */}
       {currentUser && (
-        <div
-          style={{
-            width: '1px',
-            height: '1px',
-            opacity: 0,
-            position: 'fixed',
-            bottom: 0,
-            left: 0,
-            pointerEvents: 'none',
-            overflow: 'hidden',
-          }}
-        >
-          <div id="youtube-player" ref={music.ytHostRef} />
-        </div>
+        <>
+          <audio
+            ref={music.audioRef}
+            playsInline
+            preload="auto"
+            className="hidden"
+          />
+          <div
+            style={{
+              width: '1px',
+              height: '1px',
+              opacity: 0,
+              position: 'fixed',
+              bottom: 0,
+              left: 0,
+              pointerEvents: 'none',
+              overflow: 'hidden',
+            }}
+          >
+            <div id="youtube-player" ref={music.ytHostRef} />
+          </div>
+        </>
       )}
 
       {/* Soft blurred pink blobs in corners */}
@@ -648,9 +659,9 @@ export default function App() {
       ) : (
         /* MAIN CENTERED CONTAINER MAX 430PX */
         <div
-          className={`relative z-10 mx-auto flex min-h-screen w-full max-w-[430px] flex-col px-4 pb-24 ${
-            pelukActive ? 'animate-screen-shake' : ''
-          }`}
+          className={`relative z-10 mx-auto flex min-h-screen w-full max-w-[430px] flex-col px-4 ${
+            music.activeSong ? 'pb-40' : 'pb-24'
+          } ${pelukActive ? 'animate-screen-shake' : ''}`}
         >
           {/* HOME VIEW */}
           {section === 'home' ? (
@@ -928,8 +939,11 @@ export default function App() {
                 </div>
               </div>
 
+              {/* Install KEIZ BUCIN as PWA on Home Screen */}
+              <PWAInstallButton variant="card" />
+
               {/* Footer Home */}
-              <footer className="pt-3 text-center text-[11px] font-bold text-[#9A7A8A]">
+              <footer className="pt-2 text-center text-[11px] font-bold text-[#9A7A8A]">
                 KEIZ BUCIN - 28 Agustus 2026
               </footer>
             </div>
@@ -1015,6 +1029,67 @@ export default function App() {
                   }
                 />
               )}
+            </div>
+          )}
+
+          {/* Persistent Global Mini Player above Bottom Navbar across all pages */}
+          {music.activeSong && (
+            <div className="fixed bottom-[76px] left-1/2 z-40 w-[calc(100%-24px)] max-w-[406px] -translate-x-1/2">
+              <div
+                onClick={() => openSection('lagu')}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') openSection('lagu');
+                }}
+                className="flex items-center justify-between gap-2.5 rounded-2xl border border-[#FFD6E7] bg-white/95 px-3 py-2 shadow-[0_8px_24px_rgba(255,46,126,0.16)] backdrop-blur-md cursor-pointer"
+              >
+                <div className="flex min-w-0 flex-1 items-center gap-2.5">
+                  <div
+                    className={`relative h-10 w-10 shrink-0 overflow-hidden rounded-xl border border-[#FFD6E7] bg-gradient-to-tr from-[#FF7AB8] to-[#FDE68A] shadow-sm ${
+                      music.isPlaying ? 'animate-pulse' : ''
+                    }`}
+                  >
+                    {music.activeSong.artwork ? (
+                      <img
+                        src={music.activeSong.artwork}
+                        alt={music.activeSong.title}
+                        referrerPolicy="no-referrer"
+                        className="h-full w-full object-cover"
+                      />
+                    ) : (
+                      <div className="flex h-full w-full items-center justify-center text-[#FF2E7E]">
+                        <Music2 className="h-5 w-5" />
+                      </div>
+                    )}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-xs font-extrabold text-[#2D0A1E]">
+                      {music.activeSong.title}
+                    </p>
+                    <p className="truncate text-[10px] font-semibold text-[#8A6A7A]">
+                      {music.activeSong.artist || 'Musik Berdua'} ·{' '}
+                      {music.isPlaying ? 'Lagi diputar' : 'Dijeda'}
+                    </p>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    music.togglePlayPause();
+                  }}
+                  aria-label={music.isPlaying ? 'Pause lagu' : 'Play lagu'}
+                  className="btn-bucin flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-gradient-to-r from-[#FF2E7E] to-[#FF7AB8] text-white shadow-sm cursor-pointer"
+                >
+                  {music.isPlaying ? (
+                    <Pause className="h-4 w-4" />
+                  ) : (
+                    <Play className="ml-0.5 h-4 w-4" />
+                  )}
+                </button>
+              </div>
             </div>
           )}
 

@@ -207,6 +207,7 @@ export function saveSupabaseConfig(url: string, anonKey: string): boolean {
     // ignore
   }
   inFlightCheck = null;
+  resetChatSchemaCache();
   const client = initSupabaseClient();
   reconfigListeners.forEach((fn) => fn());
   return client !== null;
@@ -220,6 +221,7 @@ export function clearSupabaseConfig(): void {
     // ignore
   }
   inFlightCheck = null;
+  resetChatSchemaCache();
   initSupabaseClient();
   reconfigListeners.forEach((fn) => fn());
 }
@@ -433,7 +435,7 @@ create table if not exists public.users_keiz (
   created_at timestamptz default now()
 );
 
-create table if not exists public.chat_keiz (
+create table if not exists public.chat (
   id uuid primary key default gen_random_uuid(),
   sender text not null,
   receiver text not null,
@@ -530,7 +532,7 @@ create table if not exists public.lagu_keiz (
 );
 
 alter table public.users_keiz enable row level security;
-alter table public.chat_keiz enable row level security;
+alter table public.chat enable row level security;
 alter table public.nobar_sync enable row level security;
 alter table public.music_sync enable row level security;
 alter table public.presence_keiz enable row level security;
@@ -540,7 +542,7 @@ alter table public.unek_unek_keiz enable row level security;
 alter table public.lagu_keiz enable row level security;
 
 create policy "allow_all_users_keiz" on public.users_keiz for all using (true) with check (true);
-create policy "allow_all_chat_keiz" on public.chat_keiz for all using (true) with check (true);
+create policy "allow_all_chat" on public.chat for all using (true) with check (true);
 create policy "allow_all_nobar_sync" on public.nobar_sync for all using (true) with check (true);
 create policy "allow_all_music_sync" on public.music_sync for all using (true) with check (true);
 create policy "allow_all_presence_keiz" on public.presence_keiz for all using (true) with check (true);
@@ -551,8 +553,8 @@ create policy "allow_all_lagu_keiz" on public.lagu_keiz for all using (true) wit
 
 insert into public.users_keiz (id, username, password_hash, nama, foto_profil, foto_latar, bio, lagu_profil)
 values
-  ('faiz', 'faiz', 'faizkece18070528', 'Faiz', '/src/assets/images/avatar_faiz_1795263046125.jpg', '/src/assets/images/galeri_sunset_1795263046141.jpg', 'pacarnya kenat, paling sayang sama yang gemes', ''),
-  ('kenat', 'kenat', 'kenatgemaz07180528', 'Kenat', '/src/assets/images/avatar_kenat_1795263046413.jpg', '/src/assets/images/galeri_sunset_1795263046141.jpg', 'pacarnya faiz, cantik sedunia no debat', '')
+  ('faiz', 'faiz', 'faizkece18070528', 'Faiz', '/src/assets/images/avatar_faiz_1795263046125.jpg', '', 'pacarnya kenat, paling sayang sama yang gemes', ''),
+  ('kenat', 'kenat', 'kenatgemaz07180528', 'Kenat', '/src/assets/images/avatar_kenat_1795263046413.jpg', '', 'pacarnya faiz, cantik sedunia no debat', '')
 on conflict (id) do nothing;
 
 insert into public.nobar_sync (id, youtube_url, "videoId", title, is_playing, "current_time", playback_rate, updated_by, action)
@@ -563,7 +565,7 @@ insert into public.music_sync (id, youtube_url, "videoId", title, artist, thumbn
 values (1, '', '', '', '', '', 213000, false, 0, 'Faiz', 'change_song')
 on conflict (id) do nothing;
 
-alter publication supabase_realtime add table public.users_keiz, public.chat_keiz, public.nobar_sync, public.music_sync, public.presence_keiz, public.call_keiz, public.postingan_keiz, public.unek_unek_keiz, public.lagu_keiz;`;
+alter publication supabase_realtime add table public.users_keiz, public.chat, public.nobar_sync, public.music_sync, public.presence_keiz, public.call_keiz, public.postingan_keiz, public.unek_unek_keiz, public.lagu_keiz;`;
 
 const localChannel =
   typeof BroadcastChannel !== 'undefined'
@@ -592,12 +594,21 @@ function makeUuid(): string {
   });
 }
 
+const LEGACY_SHARED_BANNER = '/src/assets/images/galeri_sunset_1795263046141.jpg';
+
+function sanitizeUserBanner(val: unknown): string {
+  const s = String(val || '').trim();
+  if (!s || s === LEGACY_SHARED_BANNER) return '';
+  return s;
+}
+
 export const DEFAULT_PROFILE: CoupleProfile = {
   faizName: 'Faiz',
   kenatName: 'Kenat',
   faizPhoto: '/src/assets/images/avatar_faiz_1795263046125.jpg',
   kenatPhoto: '/src/assets/images/avatar_kenat_1795263046413.jpg',
-  bannerPhoto: '/src/assets/images/galeri_sunset_1795263046141.jpg',
+  faizBanner: '',
+  kenatBanner: '',
   faizBio: 'pacarnya kenat, paling sayang sama yang gemes',
   kenatBio: 'pacarnya faiz, cantik sedunia no debat',
   anniversaryDate: '2026-08-28',
@@ -733,8 +744,11 @@ export async function fetchProfile(): Promise<CoupleProfile> {
         kenatName: String(kenatRow?.nama || DEFAULT_PROFILE.kenatName),
         faizPhoto: String(faizRow?.foto_profil || DEFAULT_PROFILE.faizPhoto),
         kenatPhoto: String(kenatRow?.foto_profil || DEFAULT_PROFILE.kenatPhoto),
-        bannerPhoto: String(
-          faizRow?.foto_latar || kenatRow?.foto_latar || DEFAULT_PROFILE.bannerPhoto
+        faizBanner: sanitizeUserBanner(
+          faizRow?.foto_latar ?? faizRow?.cover_photo ?? faizRow?.latar_foto
+        ),
+        kenatBanner: sanitizeUserBanner(
+          kenatRow?.foto_latar ?? kenatRow?.cover_photo ?? kenatRow?.latar_foto
         ),
         faizBio: String(faizRow?.bio || DEFAULT_PROFILE.faizBio),
         kenatBio: String(kenatRow?.bio || DEFAULT_PROFILE.kenatBio),
@@ -749,32 +763,41 @@ export async function fetchProfile(): Promise<CoupleProfile> {
   return DEFAULT_PROFILE;
 }
 
-export async function saveProfile(profile: CoupleProfile): Promise<CoupleProfile> {
+export async function saveProfile(
+  profile: CoupleProfile,
+  targetRole?: Role
+): Promise<CoupleProfile> {
   const sb = activeClient;
   if (sb) {
     try {
-      const { error } = await sb.from('users_keiz').upsert([
-        {
-          id: 'faiz',
-          username: 'faiz',
-          password_hash: EXPECTED_PASSWORDS.faiz,
-          nama: profile.faizName,
-          foto_profil: profile.faizPhoto,
-          foto_latar: profile.bannerPhoto,
-          bio: profile.faizBio,
-          lagu_profil: profile.faizSong,
-        },
-        {
-          id: 'kenat',
-          username: 'kenat',
-          password_hash: EXPECTED_PASSWORDS.kenat,
-          nama: profile.kenatName,
-          foto_profil: profile.kenatPhoto,
-          foto_latar: profile.bannerPhoto,
-          bio: profile.kenatBio,
-          lagu_profil: profile.kenatSong,
-        },
-      ]);
+      const faizPayload = {
+        id: 'faiz',
+        username: 'faiz',
+        password_hash: EXPECTED_PASSWORDS.faiz,
+        nama: profile.faizName,
+        foto_profil: profile.faizPhoto,
+        foto_latar: profile.faizBanner,
+        bio: profile.faizBio,
+        lagu_profil: profile.faizSong,
+      };
+      const kenatPayload = {
+        id: 'kenat',
+        username: 'kenat',
+        password_hash: EXPECTED_PASSWORDS.kenat,
+        nama: profile.kenatName,
+        foto_profil: profile.kenatPhoto,
+        foto_latar: profile.kenatBanner,
+        bio: profile.kenatBio,
+        lagu_profil: profile.kenatSong,
+      };
+      const rows =
+        targetRole === 'faiz'
+          ? [faizPayload]
+          : targetRole === 'kenat'
+          ? [kenatPayload]
+          : [faizPayload, kenatPayload];
+
+      const { error } = await sb.from('users_keiz').upsert(rows);
       if (error) {
         emitSupabaseError('Gagal nyimpan profil ke Supabase.');
       }
@@ -885,11 +908,198 @@ export async function deletePostingan(id: string): Promise<void> {
   localChannel?.postMessage({ type: 'postingan_update' });
 }
 
-// ---------- CHAT BUCIN (tabel: chat_keiz) ----------
+// ---------- CHAT BUCIN (tabel: chat) ----------
+interface ChatTableSchema {
+  columns: Set<string>;
+  senderCol: string;
+  receiverCol: string | null;
+  messageCol: string;
+  idIsInt: boolean;
+  idIsUuid: boolean;
+  senderFormat: 'lower' | 'title' | 'userId';
+  userIdMap: Record<Role, string>;
+}
+
+let cachedChatSchema: ChatTableSchema | null = null;
+let inFlightSchemaPromise: Promise<ChatTableSchema | null> | null = null;
+
+function resetChatSchemaCache(): void {
+  cachedChatSchema = null;
+  inFlightSchemaPromise = null;
+}
+
+async function discoverChatSchema(sb: SupabaseClient): Promise<ChatTableSchema | null> {
+  if (cachedChatSchema) return cachedChatSchema;
+  if (inFlightSchemaPromise) return inFlightSchemaPromise;
+
+  inFlightSchemaPromise = (async () => {
+    const columns = new Set<string>();
+    const propMeta: Record<string, { type?: string; format?: string; default?: unknown }> = {};
+    const userIdMap: Record<Role, string> = { faiz: 'faiz', kenat: 'kenat' };
+    let sampleSenderVal = '';
+
+    // 1. Cek daftar kolom asli dari OpenAPI PostgREST /rest/v1/ (berhasil meski tabel kosong)
+    const { url, anonKey } = getSupabaseConfig();
+    if (url && anonKey) {
+      try {
+        const controller = new AbortController();
+        const timer = window.setTimeout(() => controller.abort(), 5000);
+        const res = await fetch(`${url.replace(/\/+$/, '')}/rest/v1/`, {
+          headers: {
+            apikey: anonKey,
+            Authorization: `Bearer ${anonKey}`,
+            Accept: 'application/openapi+json, application/json',
+          },
+          signal: controller.signal,
+        });
+        window.clearTimeout(timer);
+        if (res.ok) {
+          const spec = (await res.json()) as {
+            definitions?: Record<string, { properties?: Record<string, { type?: string; format?: string; default?: unknown }> }>;
+            components?: { schemas?: Record<string, { properties?: Record<string, { type?: string; format?: string; default?: unknown }> }> };
+          };
+          const props =
+            spec?.definitions?.chat?.properties ??
+            spec?.components?.schemas?.chat?.properties;
+          if (props && typeof props === 'object') {
+            Object.entries(props).forEach(([col, meta]) => {
+              columns.add(col);
+              propMeta[col] = meta || {};
+            });
+          }
+        }
+      } catch {
+        // fallback ke sample query
+      }
+    }
+
+    // 2. Cek 1 row contoh dari tabel chat & users_keiz ID
+    try {
+      const [{ data: sampleRows }, { data: userRows }] = await Promise.all([
+        sb.from('chat').select('*').limit(1),
+        sb.from('users_keiz').select('id, username, nama').limit(10),
+      ]);
+
+      if (Array.isArray(userRows)) {
+        userRows.forEach((u: Record<string, unknown>) => {
+          const role = toRole(u.username ?? u.id ?? u.nama);
+          if (u.id) userIdMap[role] = String(u.id);
+        });
+      }
+
+      if (Array.isArray(sampleRows) && sampleRows.length > 0) {
+        const row = sampleRows[0] as Record<string, unknown>;
+        Object.keys(row).forEach((k) => columns.add(k));
+        const rawSender =
+          row.sender ??
+          row.sender_id ??
+          row.user_id ??
+          row.sender_name ??
+          row.pengirim ??
+          row.from_user ??
+          row.author;
+        if (rawSender) sampleSenderVal = String(rawSender);
+      }
+    } catch {
+      // ignore
+    }
+
+    if (columns.size === 0) {
+      inFlightSchemaPromise = null;
+      return null;
+    }
+
+    const pickCol = (candidates: string[]): string | null =>
+      candidates.find((c) => columns.has(c)) ?? null;
+
+    const senderCol =
+      pickCol([
+        'sender',
+        'sender_id',
+        'user_id',
+        'sender_name',
+        'pengirim',
+        'from_user',
+        'author',
+      ]) || 'sender';
+
+    const receiverCol = pickCol([
+      'receiver',
+      'receiver_id',
+      'to_user',
+      'penerima',
+    ]);
+
+    const messageCol =
+      pickCol([
+        'message',
+        'text',
+        'isi',
+        'content',
+        'pesan',
+        'chat',
+        'body',
+      ]) || 'message';
+
+    const idMeta = propMeta.id || {};
+    const idType = String(idMeta.type || '').toLowerCase();
+    const idFormat = String(idMeta.format || '').toLowerCase();
+    const idIsInt = idType === 'integer' || idFormat.includes('int') || idFormat.includes('serial');
+    const idIsUuid = idFormat.includes('uuid');
+
+    let senderFormat: ChatTableSchema['senderFormat'] = 'lower';
+    if (sampleSenderVal) {
+      if (sampleSenderVal === 'Faiz' || sampleSenderVal === 'Kenat') {
+        senderFormat = 'title';
+      } else if (sampleSenderVal === userIdMap.faiz || sampleSenderVal === userIdMap.kenat) {
+        senderFormat = 'userId';
+      } else {
+        senderFormat = 'lower';
+      }
+    } else if (senderCol.endsWith('_id')) {
+      senderFormat = 'userId';
+    } else {
+      senderFormat = 'title';
+    }
+
+    cachedChatSchema = {
+      columns,
+      senderCol,
+      receiverCol,
+      messageCol,
+      idIsInt,
+      idIsUuid,
+      senderFormat,
+      userIdMap,
+    };
+    inFlightSchemaPromise = null;
+    return cachedChatSchema;
+  })();
+
+  return inFlightSchemaPromise;
+}
+
+function formatSenderForDb(role: Role, schema: ChatTableSchema | null): string {
+  if (!schema) return role;
+  if (schema.senderFormat === 'userId') return schema.userIdMap[role] || role;
+  if (schema.senderFormat === 'title') return toDbUserName(role);
+  return role;
+}
+
 function mapChatRow(row: Record<string, unknown>, idx = 0): ChatMessage {
-  const sender = toRole(row.sender ?? row.pengirim, 'faiz');
-  const receiver = row.receiver
-    ? toRole(row.receiver, sender === 'faiz' ? 'kenat' : 'faiz')
+  const rawSender =
+    row.sender ??
+    row.sender_id ??
+    row.user_id ??
+    row.sender_name ??
+    row.pengirim ??
+    row.from_user ??
+    row.author;
+  const sender = toRole(rawSender, 'faiz');
+  const rawReceiver =
+    row.receiver ?? row.receiver_id ?? row.to_user ?? row.penerima;
+  const receiver = rawReceiver
+    ? toRole(rawReceiver, sender === 'faiz' ? 'kenat' : 'faiz')
     : sender === 'faiz'
     ? 'kenat'
     : 'faiz';
@@ -914,7 +1124,16 @@ function mapChatRow(row: Record<string, unknown>, idx = 0): ChatMessage {
     id: String(row.id ?? `msg-${idx}`),
     sender,
     receiver,
-    message: String(row.message ?? row.isi ?? ''),
+    message: String(
+      row.message ??
+        row.text ??
+        row.isi ??
+        row.content ??
+        row.pesan ??
+        row.chat ??
+        row.body ??
+        ''
+    ),
     type: inferredType,
     image_url: row.image_url ? String(row.image_url) : undefined,
     voice_url: row.voice_url ? String(row.voice_url) : undefined,
@@ -926,6 +1145,8 @@ function mapChatRow(row: Record<string, unknown>, idx = 0): ChatMessage {
     is_deleted: Boolean(row.is_deleted ?? false),
     react: row.react ? String(row.react) : undefined,
     voice_duration: row.voice_duration ? String(row.voice_duration) : undefined,
+    sending: false,
+    failed: false,
   };
 }
 
@@ -933,12 +1154,20 @@ export async function fetchChats(): Promise<ChatMessage[]> {
   const sb = activeClient;
   if (!sb) return [];
   try {
+    void discoverChatSchema(sb);
     const { data, error } = await sb
-      .from('chat_keiz')
+      .from('chat')
       .select('*')
       .order('created_at', { ascending: true })
       .limit(200);
     if (error) {
+      console.error(
+        '[KEIZ Chat fetchChats error]',
+        error.message,
+        error.details,
+        error.hint,
+        error.code
+      );
       if (error.code !== '42P01') {
         void checkSupabaseConnection();
       }
@@ -947,7 +1176,8 @@ export async function fetchChats(): Promise<ChatMessage[]> {
     return Array.isArray(data)
       ? data.map((row, idx) => mapChatRow(row as Record<string, unknown>, idx))
       : [];
-  } catch {
+  } catch (err) {
+    console.error('[KEIZ Chat fetchChats exception]', err);
     void checkSupabaseConnection();
     return [];
   }
@@ -976,56 +1206,181 @@ export async function sendChatMessage(
   };
 
   const sb = activeClient;
-  if (sb) {
-    try {
-      const { data, error } = await sb
-        .from('chat_keiz')
-        .insert([
-          {
-            id: newMsg.id,
-            sender: toDbUserName(sender),
-            receiver: toDbUserName(receiver),
-            message: newMsg.message,
-            type: newMsg.type,
-            image_url: newMsg.image_url ?? null,
-            voice_url: newMsg.voice_url ?? null,
-            voice_duration: newMsg.voice_duration ?? null,
-            is_read: false,
-            created_at: newMsg.created_at,
-            reply_to: newMsg.reply_to ?? null,
-            reply_to_text: newMsg.reply_to_text ?? null,
-            reply_to_sender: newMsg.reply_to_sender
-              ? toDbUserName(newMsg.reply_to_sender)
-              : null,
-            is_deleted: false,
-            react: newMsg.react ?? null,
-          },
-        ])
-        .select()
-        .single();
-      if (error) {
-        emitSupabaseError('Gagal kirim chat ke Supabase!');
-      } else if (data) {
-        newMsg.id = String(data.id ?? newMsg.id);
-      }
-    } catch {
-      emitSupabaseError('Gagal kirim chat ke Supabase!');
-    }
+  if (!sb) {
+    return {
+      ...newMsg,
+      sending: false,
+      failed: true,
+      errorDetails: 'Supabase belum terhubung',
+    };
   }
 
-  localChannel?.postMessage({ type: 'chat_update', payload: newMsg });
-  return newMsg;
+  try {
+    const schema = await discoverChatSchema(sb);
+    const senderVal = formatSenderForDb(sender, schema);
+    const receiverVal = formatSenderForDb(receiver, schema);
+
+    const candidatePayload: Record<string, unknown> = {};
+    if (schema) {
+      if (schema.columns.has('id') && !schema.idIsInt) {
+        candidatePayload.id = newMsg.id;
+      }
+      if (schema.columns.has(schema.senderCol)) {
+        candidatePayload[schema.senderCol] = senderVal;
+      }
+      if (schema.receiverCol && schema.columns.has(schema.receiverCol)) {
+        candidatePayload[schema.receiverCol] = receiverVal;
+      }
+      if (schema.columns.has(schema.messageCol)) {
+        candidatePayload[schema.messageCol] = newMsg.message;
+      }
+      if (schema.columns.has('type')) candidatePayload.type = newMsg.type;
+      if (schema.columns.has('image_url') && newMsg.image_url !== undefined) {
+        candidatePayload.image_url = newMsg.image_url;
+      }
+      if (schema.columns.has('voice_url') && newMsg.voice_url !== undefined) {
+        candidatePayload.voice_url = newMsg.voice_url;
+      }
+      if (schema.columns.has('voice_duration') && newMsg.voice_duration !== undefined) {
+        candidatePayload.voice_duration = newMsg.voice_duration;
+      }
+      if (schema.columns.has('is_read')) candidatePayload.is_read = false;
+      if (schema.columns.has('is_deleted')) candidatePayload.is_deleted = false;
+      if (schema.columns.has('created_at')) {
+        candidatePayload.created_at = newMsg.created_at;
+      }
+      if (schema.columns.has('reply_to') && newMsg.reply_to) {
+        candidatePayload.reply_to = newMsg.reply_to;
+      }
+      if (schema.columns.has('reply_to_text') && newMsg.reply_to_text) {
+        candidatePayload.reply_to_text = newMsg.reply_to_text;
+      }
+      if (schema.columns.has('reply_to_sender') && newMsg.reply_to_sender) {
+        candidatePayload.reply_to_sender = formatSenderForDb(
+          newMsg.reply_to_sender,
+          schema
+        );
+      }
+      if (schema.columns.has('react') && newMsg.react !== undefined) {
+        candidatePayload.react = newMsg.react;
+      }
+    } else {
+      // Fallback jika OpenAPI schema tidak tersedia: kirim kolom inti minimal
+      candidatePayload.id = newMsg.id;
+      candidatePayload.sender = senderVal;
+      candidatePayload.receiver = receiverVal;
+      candidatePayload.message = newMsg.message;
+      candidatePayload.created_at = newMsg.created_at;
+    }
+
+    let attemptPayload = { ...candidatePayload };
+    let insertedRow: Record<string, unknown> | null = null;
+    let lastError: {
+      message?: string;
+      details?: string;
+      hint?: string;
+      code?: string;
+    } | null = null;
+
+    for (let attempt = 0; attempt < 6; attempt++) {
+      const { data, error } = await sb
+        .from('chat')
+        .insert([attemptPayload])
+        .select()
+        .single();
+
+      if (!error && data) {
+        insertedRow = data as Record<string, unknown>;
+        lastError = null;
+        break;
+      }
+
+      lastError = error;
+      const errMsg = String(error?.message || '');
+      const missingColMatch =
+        errMsg.match(/Could not find the '([^']+)' column/i) ||
+        errMsg.match(/column "([^"]+)" of relation "chat" does not exist/i);
+
+      if (missingColMatch?.[1] && missingColMatch[1] in attemptPayload) {
+        const badCol = missingColMatch[1];
+        delete attemptPayload[badCol];
+        cachedChatSchema?.columns.delete(badCol);
+        continue;
+      }
+
+      // Jika id format gagal (misal id auto-increment integer atau tipe beda), coba tanpa id
+      if (
+        'id' in attemptPayload &&
+        (errMsg.toLowerCase().includes('invalid input syntax') ||
+          errMsg.toLowerCase().includes('generated always'))
+      ) {
+        delete attemptPayload.id;
+        continue;
+      }
+
+      break;
+    }
+
+    if (lastError || !insertedRow) {
+      console.error(
+        '[KEIZ Chat INSERT error]',
+        lastError?.message,
+        lastError?.details,
+        lastError?.hint,
+        lastError?.code
+      );
+      emitSupabaseError('Gagal kirim chat ke Supabase!');
+      return {
+        ...newMsg,
+        sending: false,
+        failed: true,
+        errorDetails: lastError?.message || 'Gagal menyimpan chat ke Supabase',
+      };
+    }
+
+    const mapped = mapChatRow(insertedRow);
+    const savedMsg: ChatMessage = {
+      ...newMsg,
+      ...mapped,
+      type: mapped.type || newMsg.type,
+      image_url: mapped.image_url ?? newMsg.image_url,
+      voice_url: mapped.voice_url ?? newMsg.voice_url,
+      voice_duration: mapped.voice_duration ?? newMsg.voice_duration,
+      reply_to: mapped.reply_to ?? newMsg.reply_to,
+      reply_to_text: mapped.reply_to_text ?? newMsg.reply_to_text,
+      reply_to_sender: mapped.reply_to_sender ?? newMsg.reply_to_sender,
+      sending: false,
+      failed: false,
+    };
+
+    localChannel?.postMessage({ type: 'chat_update', payload: savedMsg });
+    return savedMsg;
+  } catch (err) {
+    console.error('[KEIZ Chat INSERT exception]', err);
+    emitSupabaseError('Gagal kirim chat ke Supabase!');
+    return {
+      ...newMsg,
+      sending: false,
+      failed: true,
+      errorDetails: err instanceof Error ? err.message : 'Gagal kirim chat',
+    };
+  }
 }
 
 export async function markChatsAsRead(viewer: Role): Promise<void> {
   const sb = activeClient;
   if (!sb) return;
-  const receiverDb = toDbUserName(viewer);
   try {
+    const schema = await discoverChatSchema(sb);
+    if (schema && (!schema.columns.has('is_read') || !schema.receiverCol)) {
+      return;
+    }
+    const receiverCol = schema?.receiverCol || 'receiver';
+    const receiverDb = toDbUserName(viewer);
     await sb
-      .from('chat_keiz')
+      .from('chat')
       .update({ is_read: true })
-      .or(`receiver.eq.${receiverDb},receiver.eq.${viewer}`)
+      .or(`${receiverCol}.eq.${receiverDb},${receiverCol}.eq.${viewer}`)
       .eq('is_read', false);
   } catch {
     // ignore
@@ -1036,9 +1391,24 @@ export async function updateChatReact(id: string, react?: string): Promise<ChatM
   const sb = activeClient;
   if (sb) {
     try {
-      await sb.from('chat_keiz').update({ react: react ?? null }).eq('id', id);
-    } catch {
-      // ignore
+      const schema = await discoverChatSchema(sb);
+      if (!schema || schema.columns.has('react')) {
+        const { error } = await sb
+          .from('chat')
+          .update({ react: react ?? null })
+          .eq('id', id);
+        if (error) {
+          console.error(
+            '[KEIZ Chat react error]',
+            error.message,
+            error.details,
+            error.hint,
+            error.code
+          );
+        }
+      }
+    } catch (err) {
+      console.error('[KEIZ Chat react exception]', err);
     }
   }
   localChannel?.postMessage({ type: 'chat_update' });
@@ -1049,9 +1419,35 @@ export async function deleteChatMessage(id: string): Promise<ChatMessage[]> {
   const sb = activeClient;
   if (sb) {
     try {
-      await sb.from('chat_keiz').update({ is_deleted: true }).eq('id', id);
-    } catch {
-      // ignore
+      const schema = await discoverChatSchema(sb);
+      if (schema && !schema.columns.has('is_deleted')) {
+        const { error } = await sb.from('chat').delete().eq('id', id);
+        if (error) {
+          console.error(
+            '[KEIZ Chat delete error]',
+            error.message,
+            error.details,
+            error.hint,
+            error.code
+          );
+        }
+      } else {
+        const { error } = await sb
+          .from('chat')
+          .update({ is_deleted: true })
+          .eq('id', id);
+        if (error) {
+          console.error(
+            '[KEIZ Chat soft-delete error]',
+            error.message,
+            error.details,
+            error.hint,
+            error.code
+          );
+        }
+      }
+    } catch (err) {
+      console.error('[KEIZ Chat delete exception]', err);
     }
   }
   localChannel?.postMessage({ type: 'chat_update' });
@@ -1077,19 +1473,26 @@ export function subscribeChatRealtime(
     }
     if (!sb) return;
     chatChan = sb
-      .channel(`chat_keiz_rt_${Math.random().toString(36).slice(2, 7)}`)
+      .channel(`chat_rt_${Math.random().toString(36).slice(2, 7)}`)
       .on(
         'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'chat_keiz' },
+        { event: 'INSERT', schema: 'public', table: 'chat' },
         (payload) => {
           onInsert(mapChatRow(payload.new as Record<string, unknown>));
         }
       )
       .on(
         'postgres_changes',
-        { event: 'UPDATE', schema: 'public', table: 'chat_keiz' },
+        { event: 'UPDATE', schema: 'public', table: 'chat' },
         (payload) => {
           onUpdate(mapChatRow(payload.new as Record<string, unknown>));
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: 'DELETE', schema: 'public', table: 'chat' },
+        () => {
+          onRefresh();
         }
       )
       .subscribe();
@@ -2040,7 +2443,10 @@ export async function deleteUnekItem(id: string): Promise<boolean> {
   return true;
 }
 
-export async function replyUnekItem(id: string, replyText: string): Promise<UnekItem[]> {
+export async function replyUnekItem(
+  id: string,
+  replyText: string | null
+): Promise<UnekItem[]> {
   const sb = activeClient;
   if (sb) {
     try {
@@ -2081,7 +2487,7 @@ export function subscribeRealtime(callbacks: {
     if (!sb) return;
     sbChannel = sb
       .channel(`keiz-bucin-rt-${Math.random().toString(36).slice(2, 6)}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'chat_keiz' }, () => callbacks.onChat?.())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'chat' }, () => callbacks.onChat?.())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'lagu_keiz' }, () => callbacks.onLagu?.())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'nobar_sync' }, () => callbacks.onNobar?.())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'unek_unek_keiz' }, () => callbacks.onUnek?.())

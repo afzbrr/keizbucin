@@ -73,6 +73,39 @@ export async function resolveYouTubeVideoId(query: string): Promise<string | nul
   return null;
 }
 
+const PIPED_INSTANCES = [
+  'https://pipedapi.kavin.rocks',
+  'https://pipedapi.tokhmi.xyz',
+];
+
+async function resolveAudioStreamUrl(videoId: string): Promise<string | null> {
+  for (const base of PIPED_INSTANCES) {
+    try {
+      const controller = new AbortController();
+      const timer = window.setTimeout(() => controller.abort(), 1800);
+      const res = await fetch(`${base}/streams/${encodeURIComponent(videoId)}`, {
+        signal: controller.signal,
+      });
+      window.clearTimeout(timer);
+      if (!res.ok) continue;
+      const data = (await res.json()) as {
+        audioStreams?: Array<{ url?: string; mimeType?: string; bitrate?: number }>;
+      };
+      const streams = Array.isArray(data.audioStreams) ? data.audioStreams : [];
+      const preferred =
+        streams.find((s) => s.url && s.mimeType?.includes('audio/mp4')) ||
+        streams.find((s) => s.url && s.mimeType?.includes('audio/webm')) ||
+        streams.find((s) => Boolean(s.url));
+      if (preferred?.url) {
+        return preferred.url;
+      }
+    } catch {
+      // try next instance
+    }
+  }
+  return null;
+}
+
 function computeMusicTargetTime(state: MusicSyncState): number {
   const base = state.current_time || 0;
   if (!state.is_playing || !state.updated_at) return base;
@@ -98,14 +131,21 @@ export function useMusicSync(options: {
   const [musicRoomMembers, setMusicRoomMembers] = useState<Role[]>([]);
 
   const ytHostRef = useRef<HTMLDivElement | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
   const ytPlayerRef = useRef<YTPlayerInstance | null>(null);
   const ytReadyRef = useRef(false);
   const loadedVideoIdRef = useRef<string>('');
   const pendingStateRef = useRef<MusicSyncState | null>(null);
   const videoCacheRef = useRef<Record<string, string>>({});
+  const audioUrlCacheRef = useRef<Record<string, string | null>>({});
+  const backendRef = useRef<'youtube' | 'audio'>('youtube');
+  const playSeqRef = useRef(0);
   const queueRef = useRef<SongItem[]>([]);
   const activeSongRef = useRef<SongItem | null>(null);
   const musicSyncRef = useRef<MusicSyncState | null>(null);
+  const isPlayingRef = useRef(false);
+  const currentTimeRef = useRef(0);
+  const durationRef = useRef(0);
   const isRemoteSyncRef = useRef(false);
   const remoteGuardTimerRef = useRef<number | null>(null);
   const lastAppliedStampRef = useRef<string>('');
@@ -113,6 +153,9 @@ export function useMusicSync(options: {
   queueRef.current = queue;
   activeSongRef.current = activeSong;
   musicSyncRef.current = musicSync;
+  isPlayingRef.current = isPlaying;
+  currentTimeRef.current = currentTime;
+  durationRef.current = duration;
 
   const lockRemoteGuard = (ms = 550) => {
     isRemoteSyncRef.current = true;
@@ -122,46 +165,28 @@ export function useMusicSync(options: {
     }, ms);
   };
 
-  const applyRemoteMusicState = useCallback(
-    (state: MusicSyncState | null, force = false) => {
-      setMusicSync(state);
-      if (!state || !state.videoId) return;
+  const getActiveTime = (): number => {
+    if (backendRef.current === 'audio' && audioRef.current) {
+      return audioRef.current.currentTime || 0;
+    }
+    return ytPlayerRef.current?.getCurrentTime?.() ?? currentTimeRef.current;
+  };
 
-      const stamp = `${state.updated_at}-${state.action}-${state.videoId}-${state.is_playing}`;
-      if (
-        !force &&
-        currentUser &&
-        state.updated_by === currentUser &&
-        stamp === lastAppliedStampRef.current
-      ) {
-        return;
+  const stopAudioElement = () => {
+    const audio = audioRef.current;
+    if (audio) {
+      try {
+        audio.pause();
+      } catch {
+        // ignore
       }
-      lastAppliedStampRef.current = stamp;
+    }
+  };
 
-      const mappedSong: SongItem = {
-        id: state.videoId,
-        title: state.title,
-        artist: state.artist,
-        artwork: state.thumbnail,
-        youtube_query: `${state.title} ${state.artist}`,
-        youtube_video_id: state.videoId,
-        duration_ms: state.duration_ms || 213000,
-        added_by: state.updated_by,
-      };
-      setActiveSong((prev) => {
-        const match = queueRef.current.find(
-          (q) => q.youtube_video_id === state.videoId || q.title === state.title
-        );
-        if (match) return { ...match, youtube_video_id: state.videoId };
-        if (prev && prev.youtube_video_id === state.videoId) {
-          return { ...prev, ...mappedSong, favorite: prev.favorite };
-        }
-        return mappedSong;
-      });
-      setDuration(Math.round((state.duration_ms || 213000) / 1000));
-
-      const targetSec = computeMusicTargetTime(state);
-      setCurrentTime(targetSec);
+  const playWithYouTube = useCallback(
+    (state: MusicSyncState, targetSec: number) => {
+      backendRef.current = 'youtube';
+      stopAudioElement();
 
       const player = ytPlayerRef.current;
       if (!player || !ytReadyRef.current) {
@@ -214,7 +239,157 @@ export function useMusicSync(options: {
         setNeedsUnmute(true);
       }
     },
-    [currentUser]
+    []
+  );
+
+  const applyRemoteMusicState = useCallback(
+    (state: MusicSyncState | null, force = false) => {
+      setMusicSync(state);
+      if (!state || !state.videoId) return;
+
+      const stamp = `${state.updated_at}-${state.action}-${state.videoId}-${state.is_playing}`;
+      if (
+        !force &&
+        currentUser &&
+        state.updated_by === currentUser &&
+        stamp === lastAppliedStampRef.current
+      ) {
+        return;
+      }
+      lastAppliedStampRef.current = stamp;
+
+      const mappedSong: SongItem = {
+        id: state.videoId,
+        title: state.title,
+        artist: state.artist,
+        artwork: state.thumbnail,
+        youtube_query: `${state.title} ${state.artist}`,
+        youtube_video_id: state.videoId,
+        duration_ms: state.duration_ms || 213000,
+        added_by: state.updated_by,
+      };
+      setActiveSong((prev) => {
+        const match = queueRef.current.find(
+          (q) => q.youtube_video_id === state.videoId || q.title === state.title
+        );
+        if (match) return { ...match, youtube_video_id: state.videoId };
+        if (prev && prev.youtube_video_id === state.videoId) {
+          return { ...prev, ...mappedSong, favorite: prev.favorite };
+        }
+        return mappedSong;
+      });
+      setDuration(Math.round((state.duration_ms || 213000) / 1000));
+
+      const targetSec = computeMusicTargetTime(state);
+      setCurrentTime(targetSec);
+
+      const audio = audioRef.current;
+      const seq = ++playSeqRef.current;
+
+      // Jika native <audio> sudah memuat videoId yang sama, kontrol langsung tanpa reload
+      if (
+        audio &&
+        backendRef.current === 'audio' &&
+        audio.dataset.videoId === state.videoId &&
+        audio.src
+      ) {
+        if (Math.abs((audio.currentTime || 0) - targetSec) > 1.5 || state.action === 'seek') {
+          try {
+            audio.currentTime = targetSec;
+          } catch {
+            // ignore
+          }
+        }
+        if (state.is_playing) {
+          audio.volume = 1;
+          audio.muted = false;
+          audio
+            .play()
+            .then(() => {
+              if (playSeqRef.current !== seq) return;
+              setIsPlaying(true);
+              setLoadingAudio(false);
+              setNeedsUnmute(false);
+            })
+            .catch(() => {
+              if (playSeqRef.current !== seq) return;
+              playWithYouTube(state, targetSec);
+            });
+        } else {
+          audio.pause();
+          setIsPlaying(false);
+          setLoadingAudio(false);
+        }
+        return;
+      }
+
+      // Coba resolve stream audio native terlebih dulu agar background / lock-screen HP stabil;
+      // jika gagal/lambat, otomatis fallback ke YouTube IFrame global.
+      if (audio) {
+        const cached = audioUrlCacheRef.current[state.videoId];
+        if (cached === null) {
+          playWithYouTube(state, targetSec);
+          return;
+        }
+
+        const startWithAudioUrl = (streamUrl: string) => {
+          if (playSeqRef.current !== seq || !audioRef.current) return;
+          const el = audioRef.current;
+          backendRef.current = 'audio';
+          try {
+            ytPlayerRef.current?.pauseVideo?.();
+          } catch {
+            // ignore
+          }
+          el.dataset.videoId = state.videoId;
+          el.src = streamUrl;
+          el.volume = 1;
+          el.muted = false;
+          try {
+            el.currentTime = targetSec;
+          } catch {
+            // seek after loadedmetadata
+          }
+          if (state.is_playing) {
+            setLoadingAudio(true);
+            el.play()
+              .then(() => {
+                if (playSeqRef.current !== seq) return;
+                setIsPlaying(true);
+                setLoadingAudio(false);
+                setNeedsUnmute(false);
+              })
+              .catch(() => {
+                if (playSeqRef.current !== seq) return;
+                playWithYouTube(state, targetSec);
+              });
+          } else {
+            el.pause();
+            setIsPlaying(false);
+            setLoadingAudio(false);
+          }
+        };
+
+        if (cached) {
+          startWithAudioUrl(cached);
+          return;
+        }
+
+        void resolveAudioStreamUrl(state.videoId).then((streamUrl) => {
+          if (playSeqRef.current !== seq) return;
+          audioUrlCacheRef.current[state.videoId] = streamUrl;
+          if (streamUrl) {
+            startWithAudioUrl(streamUrl);
+          } else {
+            playWithYouTube(state, targetSec);
+          }
+        });
+        return;
+      }
+
+      playWithYouTube(state, targetSec);
+    },
+    [currentUser, playWithYouTube]
   );
 
   const playSongNow = useCallback(
@@ -273,6 +448,7 @@ export function useMusicSync(options: {
     [currentUser, applyRemoteMusicState]
   );
 
+  // Sync queue & remote music state
   useEffect(() => {
     if (!currentUser) return;
     fetchSongs().then(setQueue);
@@ -314,6 +490,72 @@ export function useMusicSync(options: {
     };
   }, [currentUser, applyRemoteMusicState]);
 
+  // Attach native <audio> element event listeners (no pause on visibilitychange/blur/pagehide!)
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+
+    const onPlay = () => {
+      if (backendRef.current !== 'audio') return;
+      setIsPlaying(true);
+      setLoadingAudio(false);
+      setNeedsUnmute(false);
+    };
+    const onPause = () => {
+      if (backendRef.current !== 'audio') return;
+      setIsPlaying(false);
+    };
+    const onTimeUpdate = () => {
+      if (backendRef.current !== 'audio') return;
+      setCurrentTime(audio.currentTime || 0);
+      if (Number.isFinite(audio.duration) && audio.duration > 0) {
+        setDuration(audio.duration);
+      }
+    };
+    const onEnded = () => {
+      if (backendRef.current !== 'audio') return;
+      setIsPlaying(false);
+      const q = queueRef.current;
+      if (q.length > 0 && musicSyncRef.current?.updated_by === currentUser) {
+        const cur = activeSongRef.current;
+        const idx = cur ? q.findIndex((s) => s.id === cur.id) : -1;
+        const next = q[(idx + 1) % q.length];
+        if (next) void playSongNow(next, 'next');
+      }
+    };
+    const onError = () => {
+      if (backendRef.current !== 'audio') return;
+      const vid = audio.dataset.videoId;
+      if (vid) {
+        audioUrlCacheRef.current[vid] = null;
+      }
+      if (musicSyncRef.current && musicSyncRef.current.videoId) {
+        playWithYouTube(
+          musicSyncRef.current,
+          computeMusicTargetTime(musicSyncRef.current)
+        );
+      } else {
+        setLoadingAudio(false);
+        setIsPlaying(false);
+      }
+    };
+
+    audio.addEventListener('play', onPlay);
+    audio.addEventListener('pause', onPause);
+    audio.addEventListener('timeupdate', onTimeUpdate);
+    audio.addEventListener('ended', onEnded);
+    audio.addEventListener('error', onError);
+
+    return () => {
+      audio.removeEventListener('play', onPlay);
+      audio.removeEventListener('pause', onPause);
+      audio.removeEventListener('timeupdate', onTimeUpdate);
+      audio.removeEventListener('ended', onEnded);
+      audio.removeEventListener('error', onError);
+    };
+  }, [currentUser, playSongNow, playWithYouTube]);
+
+  // Persistent Global YouTube IFrame API setup (never destroyed on tab change)
   useEffect(() => {
     if (!currentUser) return;
     let mounted = true;
@@ -349,7 +591,7 @@ export function useMusicSync(options: {
             }
           },
           onStateChange: (ev) => {
-            if (!mounted) return;
+            if (!mounted || backendRef.current !== 'youtube') return;
             if (ev.data === 1) {
               setIsPlaying(true);
               setLoadingAudio(false);
@@ -374,7 +616,7 @@ export function useMusicSync(options: {
             }
           },
           onError: () => {
-            if (!mounted) return;
+            if (!mounted || backendRef.current !== 'youtube') return;
             setLoadingAudio(false);
             setIsPlaying(false);
             setNeedsUnmute(true);
@@ -411,9 +653,18 @@ export function useMusicSync(options: {
     };
   }, [currentUser, applyRemoteMusicState, playSongNow]);
 
+  // Update progress bar every 500ms while playing
   useEffect(() => {
     if (!isPlaying) return;
     const timer = window.setInterval(() => {
+      if (backendRef.current === 'audio' && audioRef.current) {
+        const audio = audioRef.current;
+        setCurrentTime(audio.currentTime || 0);
+        if (Number.isFinite(audio.duration) && audio.duration > 0) {
+          setDuration(audio.duration);
+        }
+        return;
+      }
       const player = ytPlayerRef.current;
       if (!player) return;
       try {
@@ -428,15 +679,18 @@ export function useMusicSync(options: {
     return () => clearInterval(timer);
   }, [isPlaying]);
 
+  // Broadcast live music timestamp to partner
   useEffect(() => {
     if (!currentUser || !isPlaying || !musicSync || musicSync.updated_by !== currentUser) {
       return;
     }
     const hb = window.setInterval(() => {
-      const player = ytPlayerRef.current;
       const st = musicSyncRef.current;
-      if (!player || !ytReadyRef.current || !st || !st.is_playing) return;
-      const cur = player.getCurrentTime?.() ?? 0;
+      if (!st || !st.is_playing) return;
+      const cur =
+        backendRef.current === 'audio' && audioRef.current
+          ? audioRef.current.currentTime || 0
+          : ytPlayerRef.current?.getCurrentTime?.() ?? 0;
       upsertMusicSync({
         youtube_url: st.youtube_url,
         videoId: st.videoId,
@@ -453,109 +707,153 @@ export function useMusicSync(options: {
     return () => clearInterval(hb);
   }, [currentUser, isPlaying, musicSync?.videoId, musicSync?.updated_by]);
 
-  const togglePlayPause = async () => {
-    if (!currentUser) return;
-    if (!activeSong) {
-      if (queue.length > 0) {
-        await playSongNow(queue[0], 'change_song');
-      }
-      return;
-    }
-    soundFX.playClick();
-    const player = ytPlayerRef.current;
-    const nextPlaying = !isPlaying;
-    const cur = player?.getCurrentTime?.() ?? currentTime;
-
-    lockRemoteGuard(550);
-    if (player && ytReadyRef.current) {
-      try {
-        if (nextPlaying) {
-          player.unMute();
-          player.setVolume(100);
-          if (loadedVideoIdRef.current !== (activeSong.youtube_video_id || musicSync?.videoId)) {
-            const vid = activeSong.youtube_video_id || musicSync?.videoId;
-            if (vid) {
-              loadedVideoIdRef.current = vid;
-              player.loadVideoById(vid, cur);
-            }
-          }
-          player.playVideo();
-        } else {
-          player.pauseVideo();
+  const setDesiredPlaying = useCallback(
+    async (nextPlaying: boolean) => {
+      if (!currentUser) return;
+      const song = activeSongRef.current;
+      if (!song) {
+        if (nextPlaying && queueRef.current.length > 0) {
+          await playSongNow(queueRef.current[0], 'change_song');
         }
-      } catch {
-        // ignore
+        return;
       }
-    }
-    setIsPlaying(nextPlaying);
 
-    const videoId = activeSong.youtube_video_id || musicSync?.videoId || '';
-    if (videoId) {
-      const updated = await upsertMusicSync({
-        youtube_url: `https://www.youtube.com/watch?v=${videoId}`,
-        videoId,
-        title: activeSong.title,
-        artist: activeSong.artist,
-        thumbnail: activeSong.artwork,
-        duration_ms: activeSong.duration_ms || 213000,
-        is_playing: nextPlaying,
-        current_time: cur,
-        updated_by: currentUser,
-        action: nextPlaying ? 'play' : 'pause',
-      });
-      setMusicSync(updated);
-    }
-  };
+      soundFX.playClick();
+      const cur = getActiveTime();
+      lockRemoteGuard(550);
 
-  const seekTo = async (seconds: number) => {
-    if (!currentUser) return;
-    setCurrentTime(seconds);
-    lockRemoteGuard(550);
-    try {
-      ytPlayerRef.current?.seekTo(seconds, true);
-    } catch {
-      // ignore
-    }
-    const videoId = activeSong?.youtube_video_id || musicSync?.videoId;
-    if (videoId && activeSong) {
-      const updated = await upsertMusicSync({
-        youtube_url: `https://www.youtube.com/watch?v=${videoId}`,
-        videoId,
-        title: activeSong.title,
-        artist: activeSong.artist,
-        thumbnail: activeSong.artwork,
-        duration_ms: activeSong.duration_ms || 213000,
-        is_playing: isPlaying,
-        current_time: seconds,
-        updated_by: currentUser,
-        action: 'seek',
-      });
-      setMusicSync(updated);
-    }
-  };
+      if (
+        backendRef.current === 'audio' &&
+        audioRef.current &&
+        audioRef.current.src
+      ) {
+        try {
+          if (nextPlaying) {
+            audioRef.current.volume = 1;
+            audioRef.current.muted = false;
+            await audioRef.current.play();
+          } else {
+            audioRef.current.pause();
+          }
+        } catch {
+          // fallback to YouTube if audio play blocked
+          const vid = song.youtube_video_id || musicSyncRef.current?.videoId || '';
+          if (vid && musicSyncRef.current) {
+            playWithYouTube(
+              { ...musicSyncRef.current, videoId: vid, is_playing: nextPlaying },
+              cur
+            );
+          }
+        }
+      } else {
+        const player = ytPlayerRef.current;
+        if (player && ytReadyRef.current) {
+          try {
+            if (nextPlaying) {
+              player.unMute();
+              player.setVolume(100);
+              const vid = song.youtube_video_id || musicSyncRef.current?.videoId;
+              if (vid && loadedVideoIdRef.current !== vid) {
+                loadedVideoIdRef.current = vid;
+                player.loadVideoById(vid, cur);
+              }
+              player.playVideo();
+            } else {
+              player.pauseVideo();
+            }
+          } catch {
+            // ignore
+          }
+        }
+      }
+
+      setIsPlaying(nextPlaying);
+
+      const videoId = song.youtube_video_id || musicSyncRef.current?.videoId || '';
+      if (videoId) {
+        const updated = await upsertMusicSync({
+          youtube_url: `https://www.youtube.com/watch?v=${videoId}`,
+          videoId,
+          title: song.title,
+          artist: song.artist,
+          thumbnail: song.artwork,
+          duration_ms: song.duration_ms || 213000,
+          is_playing: nextPlaying,
+          current_time: cur,
+          updated_by: currentUser,
+          action: nextPlaying ? 'play' : 'pause',
+        });
+        setMusicSync(updated);
+      }
+    },
+    [currentUser, playSongNow, playWithYouTube]
+  );
+
+  const togglePlayPause = useCallback(async () => {
+    await setDesiredPlaying(!isPlayingRef.current);
+  }, [setDesiredPlaying]);
+
+  const seekTo = useCallback(
+    async (seconds: number) => {
+      if (!currentUser) return;
+      const clamped = Math.max(0, Math.min(seconds, durationRef.current || seconds));
+      setCurrentTime(clamped);
+      lockRemoteGuard(550);
+      if (backendRef.current === 'audio' && audioRef.current) {
+        try {
+          audioRef.current.currentTime = clamped;
+        } catch {
+          // ignore
+        }
+      } else {
+        try {
+          ytPlayerRef.current?.seekTo(clamped, true);
+        } catch {
+          // ignore
+        }
+      }
+      const song = activeSongRef.current;
+      const videoId = song?.youtube_video_id || musicSyncRef.current?.videoId;
+      if (videoId && song) {
+        const updated = await upsertMusicSync({
+          youtube_url: `https://www.youtube.com/watch?v=${videoId}`,
+          videoId,
+          title: song.title,
+          artist: song.artist,
+          thumbnail: song.artwork,
+          duration_ms: song.duration_ms || 213000,
+          is_playing: isPlayingRef.current,
+          current_time: clamped,
+          updated_by: currentUser,
+          action: 'seek',
+        });
+        setMusicSync(updated);
+      }
+    },
+    [currentUser]
+  );
 
   const joinLivePartnerMusic = () => {
     soundFX.playHeartBurst();
     const st = musicSyncRef.current;
     if (!st) return;
     applyRemoteMusicState(st, true);
-    const player = ytPlayerRef.current;
-    if (player && ytReadyRef.current) {
-      try {
-        player.unMute();
-        player.setVolume(100);
-        player.loadVideoById(st.videoId, computeMusicTargetTime(st));
-        player.playVideo();
-        setNeedsUnmute(false);
-        setIsPlaying(true);
-      } catch {
-        // ignore
-      }
-    }
   };
 
   const forceUnmute = () => {
     soundFX.playClick();
+    if (backendRef.current === 'audio' && audioRef.current) {
+      audioRef.current.muted = false;
+      audioRef.current.volume = 1;
+      audioRef.current
+        .play()
+        .then(() => {
+          setNeedsUnmute(false);
+          setIsPlaying(true);
+        })
+        .catch(() => {});
+      return;
+    }
     const player = ytPlayerRef.current;
     if (player && ytReadyRef.current) {
       try {
@@ -571,16 +869,112 @@ export function useMusicSync(options: {
         // ignore
       }
     } else if (activeSong) {
-      playSongNow(activeSong, 'play');
+      void playSongNow(activeSong, 'play');
     }
   };
 
-  const prevNext = (dir: -1 | 1) => {
-    if (queue.length === 0) return;
-    const idx = activeSong ? queue.findIndex((s) => s.id === activeSong.id) : 0;
-    const nextIdx = (idx + dir + queue.length) % queue.length;
-    playSongNow(queue[nextIdx], dir > 0 ? 'next' : 'prev');
-  };
+  const prevNext = useCallback(
+    (dir: -1 | 1) => {
+      const q = queueRef.current;
+      if (q.length === 0) return;
+      const cur = activeSongRef.current;
+      const idx = cur ? q.findIndex((s) => s.id === cur.id) : 0;
+      const nextIdx = (idx + dir + q.length) % q.length;
+      void playSongNow(q[nextIdx], dir > 0 ? 'next' : 'prev');
+    },
+    [playSongNow]
+  );
+
+  // Media Session API: judul lagu, artis, artwork & tombol Play / Pause / Next / Prev di lock screen & notifikasi HP
+  useEffect(() => {
+    if (typeof navigator === 'undefined' || !('mediaSession' in navigator)) {
+      return;
+    }
+
+    const ms = navigator.mediaSession;
+    if (activeSong) {
+      try {
+        ms.metadata = new MediaMetadata({
+          title: activeSong.title,
+          artist: activeSong.artist || 'KEIZ BUCIN',
+          album: 'Musik Berdua · KEIZ BUCIN',
+          artwork: activeSong.artwork
+            ? [
+                { src: activeSong.artwork, sizes: '300x300', type: 'image/jpeg' },
+                { src: '/pwa-192x192.png', sizes: '192x192', type: 'image/png' },
+                { src: '/pwa-512x512.png', sizes: '512x512', type: 'image/png' },
+              ]
+            : [
+                { src: '/pwa-192x192.png', sizes: '192x192', type: 'image/png' },
+                { src: '/pwa-512x512.png', sizes: '512x512', type: 'image/png' },
+              ],
+        });
+      } catch {
+        // ignore
+      }
+      ms.playbackState = isPlaying ? 'playing' : 'paused';
+    } else {
+      ms.playbackState = 'none';
+    }
+
+    const safeSetHandler = (
+      action: MediaSessionAction,
+      handler: MediaSessionActionHandler | null
+    ) => {
+      try {
+        ms.setActionHandler(action, handler);
+      } catch {
+        // unsupported action in this browser
+      }
+    };
+
+    safeSetHandler('play', () => {
+      void setDesiredPlaying(true);
+    });
+    safeSetHandler('pause', () => {
+      void setDesiredPlaying(false);
+    });
+    safeSetHandler('previoustrack', () => {
+      prevNext(-1);
+    });
+    safeSetHandler('nexttrack', () => {
+      prevNext(1);
+    });
+    safeSetHandler('seekto', (details) => {
+      if (typeof details.seekTime === 'number') {
+        void seekTo(details.seekTime);
+      }
+    });
+    safeSetHandler('seekbackward', (details) => {
+      const offset = details.seekOffset || 10;
+      void seekTo(Math.max(0, currentTimeRef.current - offset));
+    });
+    safeSetHandler('seekforward', (details) => {
+      const offset = details.seekOffset || 10;
+      void seekTo(currentTimeRef.current + offset);
+    });
+  }, [activeSong, isPlaying, prevNext, seekTo, setDesiredPlaying]);
+
+  // Update Media Session position state while playing
+  useEffect(() => {
+    if (
+      typeof navigator === 'undefined' ||
+      !('mediaSession' in navigator) ||
+      typeof navigator.mediaSession.setPositionState !== 'function'
+    ) {
+      return;
+    }
+    if (!activeSong || duration <= 0) return;
+    try {
+      navigator.mediaSession.setPositionState({
+        duration,
+        playbackRate: 1,
+        position: Math.max(0, Math.min(currentTime, duration)),
+      });
+    } catch {
+      // ignore
+    }
+  }, [activeSong, currentTime, duration]);
 
   const addToQueue = async (song: SongItem) => {
     if (!currentUser) return null;
@@ -620,6 +1014,7 @@ export function useMusicSync(options: {
 
   return {
     ytHostRef,
+    audioRef,
     queue,
     history,
     musicSync,

@@ -55,7 +55,8 @@ export interface CoupleProfile {
   kenatName: string;
   faizPhoto: string;
   kenatPhoto: string;
-  bannerPhoto: string;
+  faizBanner: string;
+  kenatBanner: string;
   faizBio: string;
   kenatBio: string;
   anniversaryDate: string;
@@ -87,6 +88,9 @@ export interface ChatMessage {
   is_deleted?: boolean;
   react?: string;
   voice_duration?: string;
+  sending?: boolean;
+  failed?: boolean;
+  errorDetails?: string;
 }
 
 export interface SongItem {

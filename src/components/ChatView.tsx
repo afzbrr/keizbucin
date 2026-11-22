@@ -4,12 +4,14 @@ import {
   Camera,
   Check,
   CheckCheck,
+  Clock,
   Database,
   Film,
   Mic,
   Music2,
   Phone,
   Plus,
+  RotateCcw,
   Send,
   Smile,
   X,
@@ -116,7 +118,16 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
   const loadMessages = async () => {
     const data = await fetchChats();
-    setMessages(data);
+    setMessages((prev) => {
+      const pendingOrFailed = prev.filter((m) => m.sending || m.failed);
+      const merged = [...data];
+      pendingOrFailed.forEach((localMsg) => {
+        if (!merged.some((m) => m.id === localMsg.id)) {
+          merged.push(localMsg);
+        }
+      });
+      return merged;
+    });
     if (data.some((m) => m.receiver === currentUser && !m.is_read)) {
       await markChatsAsRead(currentUser);
       setMessages((prev) =>
@@ -128,14 +139,14 @@ export const ChatView: React.FC<ChatViewProps> = ({
   };
 
   useEffect(() => {
-    loadMessages();
+    void loadMessages();
     const unsub = subscribeChatRealtime(
       (inserted) => {
         setMessages((prev) =>
           prev.some((m) => m.id === inserted.id) ? prev : [...prev, inserted]
         );
         if (inserted.receiver === currentUser && !inserted.is_read) {
-          markChatsAsRead(currentUser);
+          void markChatsAsRead(currentUser);
         }
       },
       (updated) => {
@@ -144,10 +155,18 @@ export const ChatView: React.FC<ChatViewProps> = ({
         );
       },
       () => {
-        loadMessages();
+        void loadMessages();
       }
     );
-    return unsub;
+
+    const pollTimer = window.setInterval(() => {
+      void loadMessages();
+    }, 2000);
+
+    return () => {
+      unsub();
+      window.clearInterval(pollTimer);
+    };
   }, [currentUser]);
 
   useEffect(() => {
@@ -179,9 +198,82 @@ export const ChatView: React.FC<ChatViewProps> = ({
     setShowPlusMenu(false);
     setShowStickers(false);
 
+    const tempId = `temp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const pendingMsg: ChatMessage = {
+      id: tempId,
+      sender: currentUser,
+      receiver: currentUser === 'faiz' ? 'kenat' : 'faiz',
+      message: text,
+      type:
+        payloadExtra.type ||
+        (payloadExtra.image_url ? 'image' : payloadExtra.voice_url ? 'voice' : 'text'),
+      image_url: payloadExtra.image_url,
+      voice_url: payloadExtra.voice_url,
+      voice_duration: payloadExtra.voice_duration,
+      reply_to: payloadExtra.reply_to,
+      reply_to_text: payloadExtra.reply_to_text,
+      reply_to_sender: payloadExtra.reply_to_sender,
+      is_read: false,
+      is_deleted: false,
+      created_at: new Date().toISOString(),
+      sending: true,
+      failed: false,
+    };
+
+    setMessages((prev) => [...prev, pendingMsg]);
+
     const sent = await sendChatMessage(currentUser, text, payloadExtra);
-    setMessages((prev) => (prev.some((m) => m.id === sent.id) ? prev : [...prev, sent]));
-    triggerBriefTyping();
+    setMessages((prev) => {
+      if (sent.failed) {
+        return prev.map((m) =>
+          m.id === tempId
+            ? { ...m, sending: false, failed: true, errorDetails: sent.errorDetails }
+            : m
+        );
+      }
+      const withoutTemp = prev.filter((m) => m.id !== tempId);
+      return withoutTemp.some((m) => m.id === sent.id)
+        ? withoutTemp
+        : [...withoutTemp, { ...sent, sending: false, failed: false }];
+    });
+
+    if (!sent.failed) {
+      triggerBriefTyping();
+    }
+  };
+
+  const handleRetrySend = async (failedMsg: ChatMessage) => {
+    if (failedMsg.sending) return;
+    soundFX.playClick();
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.id === failedMsg.id ? { ...m, sending: true, failed: false } : m
+      )
+    );
+
+    const sent = await sendChatMessage(failedMsg.sender, failedMsg.message, {
+      type: failedMsg.type,
+      image_url: failedMsg.image_url,
+      voice_url: failedMsg.voice_url,
+      voice_duration: failedMsg.voice_duration,
+      reply_to: failedMsg.reply_to,
+      reply_to_text: failedMsg.reply_to_text,
+      reply_to_sender: failedMsg.reply_to_sender,
+    });
+
+    setMessages((prev) => {
+      if (sent.failed) {
+        return prev.map((m) =>
+          m.id === failedMsg.id
+            ? { ...m, sending: false, failed: true, errorDetails: sent.errorDetails }
+            : m
+        );
+      }
+      const withoutFailed = prev.filter((m) => m.id !== failedMsg.id);
+      return withoutFailed.some((m) => m.id === sent.id)
+        ? withoutFailed
+        : [...withoutFailed, { ...sent, sending: false, failed: false }];
+    });
   };
 
   const handleReact = async (msg: ChatMessage, emoji: string, e: React.MouseEvent) => {
@@ -474,13 +566,19 @@ export const ChatView: React.FC<ChatViewProps> = ({
             >
               <div
                 onClick={() => {
-                  if (!msg.is_deleted) {
+                  if (msg.failed) {
+                    void handleRetrySend(msg);
+                    return;
+                  }
+                  if (!msg.is_deleted && !msg.sending) {
                     setActiveBubbleMenu((cur) => (cur === msg.id ? null : msg.id));
                   }
                 }}
                 className={`relative max-w-[82%] cursor-pointer rounded-2xl px-3.5 py-2 text-[13px] leading-relaxed text-white shadow-sm ${bubbleColor} ${
                   isMine ? 'rounded-br-[4px]' : 'rounded-bl-[4px]'
-                } ${shakingBubbleId === msg.id ? 'animate-bubble-shake' : ''}`}
+                } ${msg.failed ? 'opacity-90 ring-2 ring-rose-400' : ''} ${
+                  shakingBubbleId === msg.id ? 'animate-bubble-shake' : ''
+                }`}
               >
                 {msg.is_deleted ? (
                   <span className="italic text-xs">Pesan ini udah dihapus</span>
@@ -561,7 +659,11 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   <span>{formatTime(msg.created_at)}</span>
                   {isMine &&
                     !msg.is_deleted &&
-                    (msg.is_read ? (
+                    (msg.sending ? (
+                      <Clock className="h-3 w-3 animate-pulse text-white/75" aria-label="Mengirim" />
+                    ) : msg.failed ? (
+                      <RotateCcw className="h-3 w-3 text-rose-200" aria-label="Gagal terkirim" />
+                    ) : msg.is_read ? (
                       <CheckCheck className="h-3.5 w-3.5 text-sky-200" aria-label="Dibaca" />
                     ) : (
                       <Check className="h-3 w-3 text-white/75" aria-label="Terkirim" />
@@ -581,6 +683,17 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   </button>
                 )}
               </div>
+
+              {msg.failed && (
+                <button
+                  type="button"
+                  onClick={() => handleRetrySend(msg)}
+                  className="mt-1 flex items-center gap-1 rounded-full border border-rose-200 bg-rose-50 px-2.5 py-0.5 text-[10px] font-extrabold text-rose-600 shadow-sm cursor-pointer"
+                >
+                  <RotateCcw className="h-3 w-3" />
+                  <span>Gagal terkirim, klik untuk coba lagi</span>
+                </button>
+              )}
 
               {/* Floating React + Context Action Bar */}
               {activeBubbleMenu === msg.id && !msg.is_deleted && (
