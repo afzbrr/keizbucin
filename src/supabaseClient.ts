@@ -1967,7 +1967,6 @@ export async function fetchUnekList(): Promise<UnekItem[]> {
       return {
         id: String(row.id ?? `unek-${idx}`),
         author: toRole(row.author, 'faiz'),
-        mood: String(row.mood ?? 'Kangen 😭'),
         text: String(row.isi ?? row.text ?? ''),
         reply: row.reply ? String(row.reply) : undefined,
         is_anonymous: Boolean(row.is_anonymous ?? false),
@@ -1982,14 +1981,12 @@ export async function fetchUnekList(): Promise<UnekItem[]> {
 
 export async function addUnekItem(item: {
   author: Role;
-  mood: string;
   text: string;
   is_anonymous?: boolean;
 }): Promise<UnekItem> {
   const newItem: UnekItem = {
     id: `unek-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
     author: item.author,
-    mood: item.mood,
     text: item.text,
     is_anonymous: Boolean(item.is_anonymous ?? false),
     createdAt: 'baru aja',
@@ -2005,7 +2002,6 @@ export async function addUnekItem(item: {
             id: newItem.id,
             author: toDbUserName(item.author),
             isi: item.text,
-            mood: item.mood,
             is_anonymous: Boolean(item.is_anonymous ?? false),
             created_at: new Date().toISOString(),
           },
@@ -2024,6 +2020,24 @@ export async function addUnekItem(item: {
 
   localChannel?.postMessage({ type: 'unek_update' });
   return newItem;
+}
+
+export async function deleteUnekItem(id: string): Promise<boolean> {
+  const sb = activeClient;
+  if (sb) {
+    try {
+      const { error } = await sb.from('unek_unek_keiz').delete().eq('id', id);
+      if (error) {
+        emitSupabaseError('Gagal hapus unek-unek dari Supabase!');
+        return false;
+      }
+    } catch {
+      emitSupabaseError('Gagal hapus unek-unek dari Supabase!');
+      return false;
+    }
+  }
+  localChannel?.postMessage({ type: 'unek_update' });
+  return true;
 }
 
 export async function replyUnekItem(id: string, replyText: string): Promise<UnekItem[]> {

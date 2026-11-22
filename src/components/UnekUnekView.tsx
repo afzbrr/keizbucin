@@ -1,7 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { ArrowLeft, EyeOff, Send } from 'lucide-react';
+import { ArrowLeft, EyeOff, Send, Trash2 } from 'lucide-react';
 import {
   addUnekItem,
+  deleteUnekItem,
   fetchUnekList,
   replyUnekItem,
   sendChatMessage,
@@ -10,32 +11,21 @@ import {
 import { soundFX } from '../sound';
 import type { Role, UnekItem } from '../types';
 
-const MOODS = [
-  'Kangen 😭',
-  'Kesel 😤',
-  'Sayang 💖',
-  'Capek 🥺',
-];
-
 interface UnekUnekViewProps {
   currentUser: Role;
   onBack: () => void;
-  onTriggerPeluk: () => void;
-  onTriggerKangen: () => void;
   onBoostLove: () => void;
 }
 
 export const UnekUnekView: React.FC<UnekUnekViewProps> = ({
   currentUser,
   onBack,
-  onTriggerPeluk,
-  onTriggerKangen,
   onBoostLove,
 }) => {
   const [items, setItems] = useState<UnekItem[]>([]);
-  const [mood, setMood] = useState(MOODS[0]);
   const [text, setText] = useState('');
   const [isAnonymous, setIsAnonymous] = useState(false);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   const loadUnek = async () => {
@@ -58,16 +48,12 @@ export const UnekUnekView: React.FC<UnekUnekViewProps> = ({
     soundFX.playHeartBurst();
     const created = await addUnekItem({
       author: currentUser,
-      mood,
       text: cleaned,
       is_anonymous: isAnonymous,
     });
     setItems((prev) => [created, ...prev.filter((i) => i.id !== created.id)]);
 
-    await sendChatMessage(
-      currentUser,
-      `[Unek-Unek · ${mood}] ${cleaned}`
-    );
+    await sendChatMessage(currentUser, `[Unek-Unek] ${cleaned}`);
 
     setText('');
     onBoostLove();
@@ -82,6 +68,13 @@ export const UnekUnekView: React.FC<UnekUnekViewProps> = ({
     const updated = await replyUnekItem(id, replyText);
     setItems(updated);
     onBoostLove();
+  };
+
+  const handleConfirmDelete = async (id: string) => {
+    soundFX.playClick();
+    setConfirmDeleteId(null);
+    setItems((prev) => prev.filter((item) => item.id !== id));
+    await deleteUnekItem(id);
   };
 
   return (
@@ -106,26 +99,6 @@ export const UnekUnekView: React.FC<UnekUnekViewProps> = ({
         </div>
       </div>
 
-      {/* Peluk & Kangen Shortcuts */}
-      <div className="grid grid-cols-2 gap-3">
-        <button
-          type="button"
-          onClick={onTriggerPeluk}
-          className="btn-bucin flex min-h-[52px] items-center justify-center gap-2 rounded-full bg-[#3B82F6] px-4 text-xs font-extrabold text-white shadow-[0_4px_16px_rgba(59,130,246,0.28)] cursor-pointer"
-        >
-          <span className="text-lg">🧸</span>
-          <span>KIRIM PELUK</span>
-        </button>
-        <button
-          type="button"
-          onClick={onTriggerKangen}
-          className="btn-bucin flex min-h-[52px] items-center justify-center gap-2 rounded-full bg-gradient-to-r from-[#FF2E7E] to-[#FF7AB8] px-4 text-xs font-extrabold text-white shadow-[0_4px_16px_rgba(255,46,126,0.28)] cursor-pointer"
-        >
-          <span className="text-lg">😭</span>
-          <span>KANGEN</span>
-        </button>
-      </div>
-
       {/* Tulis Unek-unek Card */}
       <form
         onSubmit={handleSubmit}
@@ -139,33 +112,13 @@ export const UnekUnekView: React.FC<UnekUnekViewProps> = ({
           tulis aja apa adanya, yg kesel, yg kangen, atau yg capek
         </p>
 
-        <div className="mt-3 flex gap-1.5 overflow-x-auto pb-1">
-          {MOODS.map((m) => (
-            <button
-              key={m}
-              type="button"
-              onClick={() => {
-                soundFX.playClick();
-                setMood(m);
-              }}
-              className={`btn-bucin shrink-0 rounded-full px-3 py-1.5 text-[11px] font-extrabold cursor-pointer ${
-                mood === m
-                  ? 'bg-[#FF2E7E] text-white shadow-sm'
-                  : 'border border-[#FFD6E7] bg-[#FFF2F7] text-[#8A6A7A]'
-              }`}
-            >
-              {m}
-            </button>
-          ))}
-        </div>
-
         <textarea
           ref={textareaRef}
           rows={3}
           value={text}
           onChange={(e) => setText(e.target.value)}
           placeholder="tumpahin di sini aja bee, ga usah dipendem sendiri..."
-          className="mt-2.5 w-full rounded-2xl border border-[#FFD6E7] bg-[#FFF2F7] p-3 text-xs font-medium text-[#2D0A1E] placeholder-[#9A7A8A] focus:border-[#FF2E7E] focus:outline-none"
+          className="mt-3 w-full rounded-2xl border border-[#FFD6E7] bg-[#FFF2F7] p-3 text-xs font-medium text-[#2D0A1E] placeholder-[#9A7A8A] focus:border-[#FF2E7E] focus:outline-none"
         />
 
         <div className="mt-2 flex items-center justify-between">
@@ -217,6 +170,7 @@ export const UnekUnekView: React.FC<UnekUnekViewProps> = ({
         <div className="flex flex-col gap-3">
           {items.map((item, idx) => {
             const isFaiz = item.author === 'faiz';
+            const isConfirming = confirmDeleteId === item.id;
             return (
               <div
                 key={item.id}
@@ -234,15 +188,52 @@ export const UnekUnekView: React.FC<UnekUnekViewProps> = ({
                         : 'text-[#FF4D8D]'
                     }`}
                   >
-                    {item.is_anonymous
-                      ? 'Anonim 🤫'
-                      : isFaiz
-                      ? 'Faiz 💙'
-                      : 'Kenat 💖'}{' '}
-                    · {item.mood}
+                    {item.is_anonymous ? 'Anonim' : isFaiz ? 'Faiz' : 'Kenat'}
                   </span>
-                  <span className="font-semibold text-[#8A6A7A]">{item.createdAt}</span>
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-semibold text-[#8A6A7A]">
+                      {item.createdAt}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        soundFX.playClick();
+                        setConfirmDeleteId(isConfirming ? null : item.id);
+                      }}
+                      aria-label="Hapus unek-unek"
+                      className="flex h-6 w-6 items-center justify-center rounded-full text-[#9A7A8A] hover:bg-rose-50 hover:text-rose-600 cursor-pointer"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
                 </div>
+
+                {isConfirming && (
+                  <div className="mt-2 flex items-center justify-between gap-2 rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2">
+                    <span className="text-[11px] font-extrabold text-rose-700">
+                      Yakin mau hapus unek-unek ini?
+                    </span>
+                    <div className="flex shrink-0 items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => handleConfirmDelete(item.id)}
+                        className="rounded-full bg-rose-600 px-3 py-1 text-[10px] font-extrabold text-white cursor-pointer"
+                      >
+                        Ya
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          soundFX.playClick();
+                          setConfirmDeleteId(null);
+                        }}
+                        className="rounded-full border border-rose-200 bg-white px-3 py-1 text-[10px] font-extrabold text-rose-700 cursor-pointer"
+                      >
+                        Batal
+                      </button>
+                    </div>
+                  </div>
+                )}
 
                 <p className="mt-2 text-[13px] font-semibold leading-relaxed text-[#2D0A1E]">
                   {item.text}

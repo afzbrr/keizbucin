@@ -185,7 +185,7 @@ export interface GalleryPhoto {
 export interface UnekItem {
   id: string;
   author: Role;
-  mood: string;
+  mood?: string;
   text: string;
   reply?: string;
   is_anonymous?: boolean;

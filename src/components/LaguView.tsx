@@ -10,7 +10,6 @@ import {
   Share2,
   SkipBack,
   SkipForward,
-  Volume2,
   X,
   Youtube,
 } from 'lucide-react';
@@ -50,8 +49,6 @@ interface LaguViewProps {
   currentUser: Role;
   profile: CoupleProfile;
   partnerPresence: PresenceState | null;
-  inCall: boolean;
-  callMusicVolume: number;
   queue: SongItem[];
   history: SongItem[];
   musicSync: MusicSyncState | null;
@@ -61,9 +58,7 @@ interface LaguViewProps {
   needsUnmute: boolean;
   currentTime: number;
   duration: number;
-  localVolume: number;
   musicRoomMembers: Role[];
-  onLocalVolumeChange: (v: number) => void;
   onPlaySong: (song: SongItem) => Promise<boolean | undefined>;
   onTogglePlayPause: () => void;
   onSeek: (seconds: number) => void;
@@ -81,8 +76,6 @@ export const LaguView: React.FC<LaguViewProps> = ({
   currentUser,
   profile,
   partnerPresence,
-  inCall,
-  callMusicVolume,
   queue,
   history,
   musicSync,
@@ -92,9 +85,7 @@ export const LaguView: React.FC<LaguViewProps> = ({
   needsUnmute,
   currentTime,
   duration,
-  localVolume,
   musicRoomMembers,
-  onLocalVolumeChange,
   onPlaySong,
   onTogglePlayPause,
   onSeek,
@@ -407,7 +398,7 @@ export const LaguView: React.FC<LaguViewProps> = ({
               onClick={onForceUnmute}
               className="btn-bucin inline-flex items-center gap-1.5 rounded-full bg-[#FF2E7E] px-4 py-1.5 text-xs font-extrabold text-white shadow cursor-pointer"
             >
-              <Volume2 className="h-3.5 w-3.5" />
+              <Play className="h-3.5 w-3.5" />
               <span>Nyalakan Suara</span>
             </button>
           </div>
@@ -427,29 +418,6 @@ export const LaguView: React.FC<LaguViewProps> = ({
             <span>{formatSec(currentTime)}</span>
             <span>{formatSec(duration)}</span>
           </div>
-        </div>
-
-        {/* Independent Local Volume (plus Call Auto-Ducking Notice) */}
-        <div className="mt-2.5 rounded-2xl bg-white/75 px-3 py-2">
-          <div className="flex items-center justify-between text-[10px] font-extrabold text-[#5C3A49]">
-            <span className="flex items-center gap-1">
-              <Volume2 className="h-3.5 w-3.5 text-[#E91E7A]" />
-              {inCall
-                ? `Mode Call Aktif (auto ${callMusicVolume}%)`
-                : 'Volume di HP kamu (masing-masing)'}
-            </span>
-            <span className="tabular-nums text-[#E91E7A]">
-              {inCall ? Math.min(localVolume, callMusicVolume) : localVolume}%
-            </span>
-          </div>
-          <input
-            type="range"
-            min={0}
-            max={100}
-            value={localVolume}
-            onChange={(e) => onLocalVolumeChange(Number(e.target.value))}
-            className="mt-1 h-1 w-full cursor-pointer accent-[#3B82F6]"
-          />
         </div>
 
         {/* Center Controls: Prev | Big Play/Pause | Next | Share / Chat */}

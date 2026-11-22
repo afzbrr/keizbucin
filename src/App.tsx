@@ -159,11 +159,9 @@ export default function App() {
   const particlesRef = useRef<BurstParticle[]>([]);
   const rafRef = useRef<number | null>(null);
 
-  // Persistent Synced Music Player + Call Ducking
+  // Persistent Synced Music Player
   const music = useMusicSync({
     currentUser,
-    inCall,
-    callMusicVolume,
   });
 
   useEffect(() => {
@@ -465,7 +463,6 @@ export default function App() {
     if (!currentUser) return;
     await addUnekItem({
       author: currentUser,
-      mood: 'Sayang 💖',
       text,
     });
     spawnBurst(
@@ -977,8 +974,6 @@ export default function App() {
                   currentUser={currentUser}
                   profile={profile}
                   partnerPresence={partnerPresence}
-                  inCall={inCall}
-                  callMusicVolume={callMusicVolume}
                   queue={music.queue}
                   history={music.history}
                   musicSync={music.musicSync}
@@ -988,9 +983,7 @@ export default function App() {
                   needsUnmute={music.needsUnmute}
                   currentTime={music.currentTime}
                   duration={music.duration}
-                  localVolume={music.localVolume}
                   musicRoomMembers={music.musicRoomMembers}
-                  onLocalVolumeChange={music.setLocalVolume}
                   onPlaySong={(song) => music.playSongNow(song)}
                   onTogglePlayPause={music.togglePlayPause}
                   onSeek={music.seekTo}
@@ -1014,8 +1007,6 @@ export default function App() {
                 <UnekUnekView
                   currentUser={currentUser}
                   onBack={() => openSection('home')}
-                  onTriggerPeluk={handleTriggerPeluk}
-                  onTriggerKangen={handleTriggerKangen}
                   onBoostLove={() =>
                     handleHeartBurstAt(
                       window.innerWidth / 2,

@@ -83,10 +83,8 @@ function computeMusicTargetTime(state: MusicSyncState): number {
 
 export function useMusicSync(options: {
   currentUser: Role | null;
-  inCall: boolean;
-  callMusicVolume: number;
 }) {
-  const { currentUser, inCall, callMusicVolume } = options;
+  const { currentUser } = options;
 
   const [queue, setQueue] = useState<SongItem[]>([]);
   const [history, setHistory] = useState<SongItem[]>([]);
@@ -97,7 +95,6 @@ export function useMusicSync(options: {
   const [needsUnmute, setNeedsUnmute] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
-  const [localVolume, setLocalVolume] = useState(100);
   const [musicRoomMembers, setMusicRoomMembers] = useState<Role[]>([]);
 
   const ytHostRef = useRef<HTMLDivElement | null>(null);
@@ -112,16 +109,10 @@ export function useMusicSync(options: {
   const isRemoteSyncRef = useRef(false);
   const remoteGuardTimerRef = useRef<number | null>(null);
   const lastAppliedStampRef = useRef<string>('');
-  const effectiveVolumeRef = useRef<number>(100);
 
   queueRef.current = queue;
   activeSongRef.current = activeSong;
   musicSyncRef.current = musicSync;
-
-  const effectiveVolume = inCall
-    ? Math.min(localVolume, callMusicVolume)
-    : localVolume;
-  effectiveVolumeRef.current = effectiveVolume;
 
   const lockRemoteGuard = (ms = 550) => {
     isRemoteSyncRef.current = true;
@@ -130,16 +121,6 @@ export function useMusicSync(options: {
       isRemoteSyncRef.current = false;
     }, ms);
   };
-
-  useEffect(() => {
-    const player = ytPlayerRef.current;
-    if (!player || !ytReadyRef.current) return;
-    try {
-      player.setVolume(effectiveVolume);
-    } catch {
-      // ignore
-    }
-  }, [effectiveVolume]);
 
   const applyRemoteMusicState = useCallback(
     (state: MusicSyncState | null, force = false) => {
@@ -194,7 +175,7 @@ export function useMusicSync(options: {
         if (loadedVideoIdRef.current !== state.videoId) {
           loadedVideoIdRef.current = state.videoId;
           player.unMute();
-          player.setVolume(effectiveVolumeRef.current);
+          player.setVolume(100);
           if (state.is_playing) {
             setLoadingAudio(true);
             player.loadVideoById(state.videoId, targetSec);
@@ -209,7 +190,7 @@ export function useMusicSync(options: {
           }
           if (state.is_playing) {
             player.unMute();
-            player.setVolume(effectiveVolumeRef.current);
+            player.setVolume(100);
             player.playVideo();
           } else {
             player.pauseVideo();
@@ -220,7 +201,7 @@ export function useMusicSync(options: {
           try {
             if (player.isMuted?.()) {
               player.unMute();
-              player.setVolume(effectiveVolumeRef.current);
+              player.setVolume(100);
               setNeedsUnmute(player.isMuted());
             } else {
               setNeedsUnmute(false);
@@ -252,7 +233,7 @@ export function useMusicSync(options: {
 
       try {
         ytPlayerRef.current?.unMute();
-        ytPlayerRef.current?.setVolume(effectiveVolumeRef.current);
+        ytPlayerRef.current?.setVolume(100);
       } catch {
         // ignore
       }
@@ -357,7 +338,7 @@ export function useMusicSync(options: {
             ytReadyRef.current = true;
             try {
               ev.target.unMute();
-              ev.target.setVolume(effectiveVolumeRef.current);
+              ev.target.setVolume(100);
             } catch {
               // ignore
             }
@@ -374,7 +355,7 @@ export function useMusicSync(options: {
               setLoadingAudio(false);
               try {
                 ev.target.unMute();
-                ev.target.setVolume(effectiveVolumeRef.current);
+                ev.target.setVolume(100);
                 setNeedsUnmute(ev.target.isMuted?.() ?? false);
               } catch {
                 // ignore
@@ -490,7 +471,7 @@ export function useMusicSync(options: {
       try {
         if (nextPlaying) {
           player.unMute();
-          player.setVolume(effectiveVolume);
+          player.setVolume(100);
           if (loadedVideoIdRef.current !== (activeSong.youtube_video_id || musicSync?.videoId)) {
             const vid = activeSong.youtube_video_id || musicSync?.videoId;
             if (vid) {
@@ -562,7 +543,7 @@ export function useMusicSync(options: {
     if (player && ytReadyRef.current) {
       try {
         player.unMute();
-        player.setVolume(effectiveVolumeRef.current);
+        player.setVolume(100);
         player.loadVideoById(st.videoId, computeMusicTargetTime(st));
         player.playVideo();
         setNeedsUnmute(false);
@@ -579,7 +560,7 @@ export function useMusicSync(options: {
     if (player && ytReadyRef.current) {
       try {
         player.unMute();
-        player.setVolume(effectiveVolumeRef.current);
+        player.setVolume(100);
         if (musicSyncRef.current) {
           player.seekTo(computeMusicTargetTime(musicSyncRef.current), true);
         }
@@ -648,9 +629,6 @@ export function useMusicSync(options: {
     needsUnmute,
     currentTime,
     duration,
-    localVolume,
-    setLocalVolume,
-    effectiveVolume,
     musicRoomMembers,
     playSongNow,
     togglePlayPause,
