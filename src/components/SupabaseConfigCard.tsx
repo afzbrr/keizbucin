@@ -153,7 +153,7 @@ export const SupabaseConfigCard: React.FC<SupabaseConfigCardProps> = ({
               : 'bg-rose-50 text-rose-600 border border-rose-200'
           }`}
         >
-          {statusOk ? 'Terhubung ✅' : testing ? 'Ngecek...' : 'Gagal ❌'}
+          {statusOk ? 'Terhubung' : testing ? 'Ngecek...' : 'Gagal'}
         </span>
       </div>
 

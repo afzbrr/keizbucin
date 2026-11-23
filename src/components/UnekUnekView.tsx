@@ -5,11 +5,12 @@ import {
   deleteUnekItem,
   fetchUnekList,
   replyUnekItem,
-  sendChatMessage,
   subscribeRealtime,
 } from '../supabaseClient';
 import { soundFX } from '../sound';
 import type { Role, UnekItem } from '../types';
+
+const MOOD_OPTIONS = ['Kangen', 'Senang', 'Kesel', 'Capek', 'Sayang'] as const;
 
 interface UnekUnekViewProps {
   currentUser: Role;
@@ -24,6 +25,7 @@ export const UnekUnekView: React.FC<UnekUnekViewProps> = ({
 }) => {
   const [items, setItems] = useState<UnekItem[]>([]);
   const [text, setText] = useState('');
+  const [mood, setMood] = useState<string>('Kangen');
   const [isAnonymous, setIsAnonymous] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [replyingId, setReplyingId] = useState<string | null>(null);
@@ -51,11 +53,10 @@ export const UnekUnekView: React.FC<UnekUnekViewProps> = ({
     const created = await addUnekItem({
       author: currentUser,
       text: cleaned,
+      mood,
       is_anonymous: isAnonymous,
     });
     setItems((prev) => [created, ...prev.filter((i) => i.id !== created.id)]);
-
-    await sendChatMessage(currentUser, `[Unek-Unek] ${cleaned}`);
 
     setText('');
     onBoostLove();
@@ -105,7 +106,7 @@ export const UnekUnekView: React.FC<UnekUnekViewProps> = ({
   };
 
   return (
-    <div className="animate-slide-in-right flex flex-col gap-4 pb-8">
+    <div className="animate-slide-in-right flex flex-col gap-4 pb-3">
       {/* Header */}
       <div className="flex items-center gap-2.5">
         <button
@@ -133,18 +134,38 @@ export const UnekUnekView: React.FC<UnekUnekViewProps> = ({
       >
         <div className="washi-tape left-1/2 -top-2.5 -translate-x-1/2 -rotate-1" />
         <p className="font-display text-[15px] font-extrabold text-[#2D0A1E]">
-          Lagi mikirin apa, {currentUser === 'faiz' ? 'Faiz' : 'Kenat'}?
+          Lagi mikirin apa, {currentUser === 'faiz' ? 'faiz' : 'kenat'}?
         </p>
         <p className="mt-0.5 text-[12px] font-medium text-[#8A6A7A]">
           tulis aja apa adanya, yg kesel, yg kangen, atau yg capek
         </p>
+
+        <div className="mt-2.5 flex flex-wrap gap-1.5">
+          {MOOD_OPTIONS.map((m) => (
+            <button
+              key={m}
+              type="button"
+              onClick={() => {
+                soundFX.playClick();
+                setMood(m);
+              }}
+              className={`rounded-full px-3 py-1 text-[11px] font-extrabold border cursor-pointer ${
+                mood === m
+                  ? 'border-[#FF2E7E] bg-[#FF2E7E] text-white shadow-xs'
+                  : 'border-[#FFD6E7] bg-[#FFF8FA] text-[#8A6A7A]'
+              }`}
+            >
+              {m}
+            </button>
+          ))}
+        </div>
 
         <textarea
           ref={textareaRef}
           rows={3}
           value={text}
           onChange={(e) => setText(e.target.value)}
-          placeholder="tumpahin di sini aja bee, ga usah dipendem sendiri..."
+          placeholder="tumpahin di sini aja, ga usah dipendem sendiri..."
           className="mt-3 w-full rounded-2xl border border-[#FFD6E7] bg-[#FFF2F7] p-3 text-xs font-medium text-[#2D0A1E] placeholder-[#9A7A8A] focus:border-[#FF2E7E] focus:outline-none"
         />
 
@@ -199,7 +220,7 @@ export const UnekUnekView: React.FC<UnekUnekViewProps> = ({
             const isFaiz = item.author === 'faiz';
             const isConfirming = confirmDeleteId === item.id;
             const canReply = item.author !== currentUser;
-            const replierName = isFaiz ? 'Kenat' : 'Faiz';
+            const replierName = isFaiz ? 'kenat' : 'faiz';
             const isEditingReply = replyingId === item.id;
 
             return (
@@ -210,17 +231,24 @@ export const UnekUnekView: React.FC<UnekUnekViewProps> = ({
                 }`}
               >
                 <div className="flex items-center justify-between text-[11px]">
-                  <span
-                    className={`font-extrabold ${
-                      item.is_anonymous
-                        ? 'text-[#D81B6E]'
-                        : isFaiz
-                        ? 'text-[#3B82F6]'
-                        : 'text-[#FF4D8D]'
-                    }`}
-                  >
-                    {item.is_anonymous ? 'Anonim' : isFaiz ? 'Faiz' : 'Kenat'}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <span
+                      className={`font-extrabold ${
+                        item.is_anonymous
+                          ? 'text-[#D81B6E]'
+                          : isFaiz
+                          ? 'text-[#3B82F6]'
+                          : 'text-[#FF4D8D]'
+                      }`}
+                    >
+                      {item.is_anonymous ? 'Anonim' : isFaiz ? 'faiz' : 'kenat'}
+                    </span>
+                    {item.mood && (
+                      <span className="rounded-full border border-[#FFD6E7] bg-[#FFF2F7] px-2 py-0.5 text-[10px] font-extrabold text-[#D81B6E]">
+                        {item.mood}
+                      </span>
+                    )}
+                  </div>
                   <div className="flex items-center gap-1.5">
                     <span className="font-semibold text-[#8A6A7A]">
                       {item.createdAt}

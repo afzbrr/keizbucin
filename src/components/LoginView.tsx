@@ -57,7 +57,7 @@ export const LoginView: React.FC<LoginViewProps> = ({ profile, onSuccess }) => {
       const who = selected === 'faiz' ? profile.faizName : profile.kenatName;
       await sendChatMessage(
         selected,
-        `upss ${who} salah masukin sandi ${nextWrong}x nih di halaman login, bantuin inget dong ayang 😅`
+        `upss ${who} salah masukin sandi ${nextWrong}x nih di halaman login, bantuin inget dong ayang`
       );
     }
   };
@@ -67,7 +67,7 @@ export const LoginView: React.FC<LoginViewProps> = ({ profile, onSuccess }) => {
     soundFX.playPop();
     const msg =
       askText.trim() ||
-      `ayanggg aku lupa sandi KEIZ BUCIN aku nih, kasih tau dong hehe 🥺`;
+      `ayanggg aku lupa sandi KEIZ BUCIN aku nih, kasih tau dong hehe`;
     await sendChatMessage(selected, msg);
     setAskSent(true);
     setTimeout(() => {

@@ -594,7 +594,7 @@ export const CallOverlay: React.FC<CallOverlayProps> = ({
                 {!activeCall
                   ? `Siap nelpon ${partnerName} kapan aja`
                   : isIncomingRinging
-                  ? `${partnerName} lagi nelpon kamu nihhh! 💖`
+                  ? `${partnerName} lagi nelpon kamu nihhh!`
                   : activeCall.status === 'ringing'
                   ? `Lagi manggil ${partnerName}...`
                   : `Terhubung · ${formatTimer(callSeconds)}`}

@@ -1,4 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
+import EmojiPicker, {
+  EmojiStyle,
+  Theme,
+  type EmojiClickData,
+} from 'emoji-picker-react';
 import {
   ArrowLeft,
   Camera,
@@ -7,9 +12,11 @@ import {
   Clock,
   Database,
   Film,
+  Heart,
   Mic,
   Music2,
   Phone,
+  Play,
   Plus,
   RotateCcw,
   Send,
@@ -22,10 +29,13 @@ import {
   fetchChats,
   formatPartnerPresenceText,
   getConnectionStatus,
+  isPresenceOnline,
   markChatsAsRead,
   sendChatMessage,
+  sendTypingBroadcast,
   subscribeChatRealtime,
   subscribeConnectionStatus,
+  subscribeTypingBroadcast,
   updateChatReact,
 } from '../supabaseClient';
 import { soundFX } from '../sound';
@@ -38,32 +48,11 @@ import type {
   Role,
 } from '../types';
 
-const REACTS = ['❤️', '😂', '😭', '😍', '😡', '🔥', '👍'];
-
-const STICKERS = [
-  'kangen banget! 💖',
-  'sini peluk! 🫂',
-  'udah makan blm? 🥺',
-  'loveyouuu 💙',
-];
-
-const QUICK_REPLIES: Record<Role, string[]> = {
-  faiz: [
-    'ayang udah makan belum? 🥺',
-    'faiz lagi kangen kenat nih 💙',
-  ],
-  kenat: [
-    'faiz udah makan belum?',
-    'kenat kangen faiz nih 💖',
-  ],
-};
-
 interface ChatViewProps {
   profile: CoupleProfile;
   currentUser: Role;
   partnerPresence: PresenceState | null;
   onBack: () => void;
-  onChangeUser: (role: Role) => void;
   onNavigate: (sec: AppSection) => void;
   onStartCall: () => void;
   onForwardToUnek: (text: string) => void;
@@ -75,7 +64,6 @@ export const ChatView: React.FC<ChatViewProps> = ({
   currentUser,
   partnerPresence,
   onBack,
-  onChangeUser,
   onNavigate,
   onStartCall,
   onForwardToUnek,
@@ -85,10 +73,11 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const [input, setInput] = useState('');
   const [replyingTo, setReplyingTo] = useState<ChatMessage | null>(null);
   const [activeBubbleMenu, setActiveBubbleMenu] = useState<string | null>(null);
+  const [reactTargetMsg, setReactTargetMsg] = useState<ChatMessage | null>(null);
+  const [showInputEmojiPicker, setShowInputEmojiPicker] = useState(false);
   const [shakingBubbleId, setShakingBubbleId] = useState<string | null>(null);
   const [partnerTyping, setPartnerTyping] = useState(false);
   const [showPlusMenu, setShowPlusMenu] = useState(false);
-  const [showStickers, setShowStickers] = useState(false);
   const [showSupabaseConfig, setShowSupabaseConfig] = useState(false);
   const [recordingVN, setRecordingVN] = useState(false);
   const [copiedToast, setCopiedToast] = useState<string | null>(null);
@@ -108,17 +97,47 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const fileRef = useRef<HTMLInputElement | null>(null);
   const touchStartX = useRef<number | null>(null);
   const longPressTimer = useRef<number | null>(null);
+  const longPressFiredRef = useRef(false);
 
-  const partnerRole: Role = currentUser === 'faiz' ? 'kenat' : 'faiz';
-  const partnerName =
-    partnerRole === 'kenat'
-      ? `${profile.kenatName} 💖`
-      : `${profile.faizName} 💙`;
+  // Real typing broadcast + DB polling timers & refs
+  const lastTypingSentAtRef = useRef<number>(0);
+  const stopTypingTimerRef = useRef<number | null>(null);
+  const partnerTypingClearRef = useRef<number | null>(null);
+  const lastBroadcastTrueAtRef = useRef<number>(0);
+  const lastDbUpdatedAtRef = useRef<number>(0);
+
+  const userLower = currentUser.toLowerCase() as Role;
+  const partnerRole: Role = userLower === 'faiz' ? 'kenat' : 'faiz';
+  const partnerName = partnerRole;
   const partnerPhoto =
     partnerRole === 'kenat' ? profile.kenatPhoto : profile.faizPhoto;
 
+  const isPartnerOnline =
+    isPresenceOnline(partnerPresence) && partnerPresence?.status === 'online';
+  const partnerOnlineRef = useRef(isPartnerOnline);
+  partnerOnlineRef.current = isPartnerOnline;
+
+  const clearPartnerTypingState = () => {
+    if (partnerTypingClearRef.current) {
+      window.clearTimeout(partnerTypingClearRef.current);
+      partnerTypingClearRef.current = null;
+    }
+    setPartnerTyping(false);
+  };
+
+  const stopOwnTyping = () => {
+    if (stopTypingTimerRef.current) {
+      window.clearTimeout(stopTypingTimerRef.current);
+      stopTypingTimerRef.current = null;
+    }
+    if (lastTypingSentAtRef.current !== 0) {
+      lastTypingSentAtRef.current = 0;
+      sendTypingBroadcast(userLower, false);
+    }
+  };
+
   const loadMessages = async () => {
-    const data = await fetchChats();
+    const data = await fetchChats(userLower);
     setMessages((prev) => {
       const pendingOrFailed = prev.filter((m) => m.sending || m.failed);
       const merged = [...data];
@@ -129,11 +148,11 @@ export const ChatView: React.FC<ChatViewProps> = ({
       });
       return merged;
     });
-    if (data.some((m) => m.receiver === currentUser && !m.is_read)) {
-      await markChatsAsRead(currentUser);
+    if (data.some((m) => m.receiver === userLower && !m.is_read)) {
+      await markChatsAsRead(userLower);
       setMessages((prev) =>
         prev.map((m) =>
-          m.receiver === currentUser ? { ...m, is_read: true } : m
+          m.receiver === userLower ? { ...m, is_read: true } : m
         )
       );
     }
@@ -143,14 +162,45 @@ export const ChatView: React.FC<ChatViewProps> = ({
     void loadMessages();
     const unsub = subscribeChatRealtime(
       (inserted) => {
+        const s = inserted.sender.toLowerCase();
+        const r = inserted.receiver.toLowerCase();
+        const isPair =
+          (s === userLower && r === partnerRole) ||
+          (s === partnerRole && r === userLower);
+        if (
+          !isPair ||
+          (inserted.type !== 'text' &&
+            inserted.type !== 'image' &&
+            inserted.type !== 'voice') ||
+          inserted.message.startsWith('[Unek-Unek]')
+        ) {
+          return;
+        }
+        if (s === partnerRole) {
+          clearPartnerTypingState();
+        }
         setMessages((prev) =>
           prev.some((m) => m.id === inserted.id) ? prev : [...prev, inserted]
         );
-        if (inserted.receiver === currentUser && !inserted.is_read) {
-          void markChatsAsRead(currentUser);
+        if (r === userLower && !inserted.is_read) {
+          void markChatsAsRead(userLower);
         }
       },
       (updated) => {
+        const s = updated.sender.toLowerCase();
+        const r = updated.receiver.toLowerCase();
+        const isPair =
+          (s === userLower && r === partnerRole) ||
+          (s === partnerRole && r === userLower);
+        if (
+          !isPair ||
+          (updated.type !== 'text' &&
+            updated.type !== 'image' &&
+            updated.type !== 'voice') ||
+          updated.message.startsWith('[Unek-Unek]')
+        ) {
+          return;
+        }
         setMessages((prev) =>
           prev.map((m) => (m.id === updated.id ? updated : m))
         );
@@ -168,21 +218,119 @@ export const ChatView: React.FC<ChatViewProps> = ({
       unsub();
       window.clearInterval(pollTimer);
     };
-  }, [currentUser]);
+  }, [userLower, partnerRole]);
+
+  // Subscribe to REAL partner typing events (Broadcast 'keiz_typing_room' + DB fallback 'keiz_typing')
+  useEffect(() => {
+    clearPartnerTypingState();
+    lastBroadcastTrueAtRef.current = 0;
+    lastDbUpdatedAtRef.current = 0;
+
+    const unsubTyping = subscribeTypingBroadcast(
+      userLower,
+      (user, isTyping, source, updatedAtMs) => {
+        if (user.toLowerCase() !== partnerRole) return;
+        if (!partnerOnlineRef.current) {
+          clearPartnerTypingState();
+          return;
+        }
+
+        if (source === 'broadcast') {
+          if (isTyping) {
+            lastBroadcastTrueAtRef.current = Date.now();
+            setPartnerTyping(true);
+            if (partnerTypingClearRef.current) {
+              window.clearTimeout(partnerTypingClearRef.current);
+            }
+            partnerTypingClearRef.current = window.setTimeout(() => {
+              setPartnerTyping(false);
+              partnerTypingClearRef.current = null;
+            }, 3000);
+          } else {
+            clearPartnerTypingState();
+          }
+          return;
+        }
+
+        // DB fallback ('keiz_typing')
+        const ts = updatedAtMs || Date.now();
+        if (isTyping) {
+          const age = Math.max(0, Date.now() - ts);
+          if (age >= 3000) {
+            clearPartnerTypingState();
+            return;
+          }
+          if (ts > lastDbUpdatedAtRef.current) {
+            lastDbUpdatedAtRef.current = ts;
+            setPartnerTyping(true);
+            if (partnerTypingClearRef.current) {
+              window.clearTimeout(partnerTypingClearRef.current);
+            }
+            partnerTypingClearRef.current = window.setTimeout(() => {
+              setPartnerTyping(false);
+              partnerTypingClearRef.current = null;
+            }, Math.max(500, 3000 - age));
+          }
+        } else if (
+          Date.now() - lastBroadcastTrueAtRef.current > 700 ||
+          ts >= lastBroadcastTrueAtRef.current - 400
+        ) {
+          clearPartnerTypingState();
+        }
+      }
+    );
+
+    return () => {
+      unsubTyping();
+      clearPartnerTypingState();
+      if (stopTypingTimerRef.current) {
+        window.clearTimeout(stopTypingTimerRef.current);
+        stopTypingTimerRef.current = null;
+      }
+      if (lastTypingSentAtRef.current !== 0) {
+        lastTypingSentAtRef.current = 0;
+        sendTypingBroadcast(userLower, false);
+      }
+    };
+  }, [userLower, partnerRole]);
+
+  // Hide typing indicator immediately if partner goes offline
+  useEffect(() => {
+    if (!isPartnerOnline) {
+      clearPartnerTypingState();
+    }
+  }, [isPartnerOnline]);
 
   useEffect(() => {
     listEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages.length, partnerTyping]);
 
-  const triggerBriefTyping = () => {
-    setPartnerTyping(true);
-    setTimeout(() => setPartnerTyping(false), 1200);
+  const handleInputChange = (val: string) => {
+    setInput(val);
+    if (val.length > 0) {
+      const now = Date.now();
+      if (now - lastTypingSentAtRef.current >= 800) {
+        lastTypingSentAtRef.current = now;
+        sendTypingBroadcast(userLower, true);
+      }
+      if (stopTypingTimerRef.current) {
+        window.clearTimeout(stopTypingTimerRef.current);
+      }
+      stopTypingTimerRef.current = window.setTimeout(() => {
+        stopTypingTimerRef.current = null;
+        lastTypingSentAtRef.current = 0;
+        sendTypingBroadcast(userLower, false);
+      }, 2000);
+    } else {
+      stopOwnTyping();
+    }
   };
 
   const handleSend = async (textOverride?: string, extra?: Partial<ChatMessage>) => {
     const text = (textOverride ?? input).trim();
     if (!text && !extra?.image_url && !extra?.voice_url) return;
     if (!textOverride) setInput('');
+    stopOwnTyping();
     soundFX.playPop();
 
     const payloadExtra: Partial<ChatMessage> = {
@@ -197,7 +345,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
     };
     setReplyingTo(null);
     setShowPlusMenu(false);
-    setShowStickers(false);
+    setShowInputEmojiPicker(false);
 
     const tempId = `temp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     const pendingMsg: ChatMessage = {
@@ -242,10 +390,6 @@ export const ChatView: React.FC<ChatViewProps> = ({
           ? withoutTemp
           : [...withoutTemp, { ...sent, sending: false, failed: false }];
       });
-
-      if (!sent.failed) {
-        triggerBriefTyping();
-      }
     } catch (err) {
       console.log('[ChatView] Unexpected insert error object:', err);
       console.log('[ChatView] Failed payload:', JSON.stringify(pendingMsg));
@@ -328,18 +472,54 @@ export const ChatView: React.FC<ChatViewProps> = ({
     }
   };
 
-  const handleReact = async (msg: ChatMessage, emoji: string, e: React.MouseEvent) => {
+  const applyReactionToMessage = async (
+    msg: ChatMessage,
+    emoji: string,
+    burstPoint?: { x: number; y: number }
+  ) => {
     const nextReact = msg.react === emoji ? undefined : emoji;
     soundFX.playPop();
-    if (nextReact === '❤️') {
-      const rect = e.currentTarget.getBoundingClientRect();
-      onHeartBurstAt(rect.left + rect.width / 2, rect.top + rect.height / 2);
+    if (nextReact === '❤️' && burstPoint) {
+      onHeartBurstAt(burstPoint.x, burstPoint.y);
       setShakingBubbleId(msg.id);
       setTimeout(() => setShakingBubbleId(null), 500);
     }
     setActiveBubbleMenu(null);
+    setReactTargetMsg(null);
+
+    // Optimistic update so emoji appears immediately
+    setMessages((prev) =>
+      prev.map((m) => (m.id === msg.id ? { ...m, react: nextReact } : m))
+    );
+
     const updated = await updateChatReact(msg.id, nextReact);
-    setMessages(updated);
+    if (updated.length > 0) {
+      setMessages(updated);
+    }
+  };
+
+  const handleReactBadgeClick = async (
+    msg: ChatMessage,
+    emoji: string,
+    e: React.MouseEvent
+  ) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    await applyReactionToMessage(msg, emoji, {
+      x: rect.left + rect.width / 2,
+      y: rect.top + rect.height / 2,
+    });
+  };
+
+  const handlePickerReactSelect = async (emojiData: EmojiClickData, event: MouseEvent) => {
+    if (!reactTargetMsg) return;
+    await applyReactionToMessage(reactTargetMsg, emojiData.emoji, {
+      x: event.clientX || window.innerWidth / 2,
+      y: event.clientY || window.innerHeight / 2,
+    });
+  };
+
+  const handlePickerInputSelect = (emojiData: EmojiClickData) => {
+    handleInputChange(`${input}${emojiData.emoji}`);
   };
 
   const handleDelete = async (id: string) => {
@@ -355,7 +535,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
     const reader = new FileReader();
     reader.onload = () => {
       if (typeof reader.result === 'string') {
-        handleSend('pap dulu nihh 📸', {
+        handleSend('pap dulu nihh', {
           type: 'image',
           image_url: reader.result,
         });
@@ -371,7 +551,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
       setRecordingVN(true);
     } else {
       setRecordingVN(false);
-      handleSend('🎤 Voice note lucu buat kamu (0:04)', {
+      handleSend('Voice note lucu buat kamu (0:04)', {
         type: 'voice',
         voice_url: 'voice://local-note',
         voice_duration: '0:04',
@@ -396,41 +576,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
   );
 
   return (
-    <div className="animate-slide-in-right flex flex-col gap-2.5 pb-6">
-      {/* Top 2 buttons: Pick WHO AM I */}
-      <div className="grid grid-cols-2 gap-2">
-        <button
-          type="button"
-          onClick={() => {
-            soundFX.playClick();
-            onChangeUser('faiz');
-          }}
-          className={`btn-bucin min-h-[40px] rounded-full text-xs font-extrabold cursor-pointer ${
-            currentUser === 'faiz'
-              ? 'bg-[#3B82F6] text-white shadow-md shadow-blue-500/25'
-              : 'border border-[#FFD6E7] bg-white text-[#8A6A7A]'
-          }`}
-        >
-          Faiz 💙
-        </button>
-        <button
-          type="button"
-          onClick={() => {
-            soundFX.playClick();
-            onChangeUser('kenat');
-          }}
-          className={`btn-bucin min-h-[40px] rounded-full text-xs font-extrabold cursor-pointer ${
-            currentUser === 'kenat'
-              ? 'bg-[#FF4D8D] text-white shadow-md shadow-pink-500/25'
-              : 'border border-[#FFD6E7] bg-white text-[#8A6A7A]'
-          }`}
-        >
-          Kenat 💖
-        </button>
-      </div>
-
+    <div className="animate-slide-in-right flex min-h-0 flex-1 flex-col gap-2 overflow-hidden">
       {/* Partner Header + Call + Supabase Config Button */}
-      <div className="keiz-card flex items-center justify-between bg-white px-3 py-2.5">
+      <div className="keiz-card flex shrink-0 items-center justify-between bg-white px-3 py-2">
         <div className="flex min-w-0 items-center gap-2.5">
           <button
             type="button"
@@ -506,7 +654,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
       {/* Quick Join Nonton / Ikut Dengerin strip if partner is watching or listening */}
       {(partnerPresenceDisplay.isWatchingNobar ||
         partnerPresenceDisplay.isListeningMusic) && (
-        <div className="flex items-center justify-between gap-2 rounded-2xl border border-[#FFD6E7] bg-[#FFF5F9] px-3 py-2 shadow-sm">
+        <div className="flex shrink-0 items-center justify-between gap-2 rounded-2xl border border-[#FFD6E7] bg-[#FFF5F9] px-3 py-2 shadow-sm">
           <p className="truncate text-[11px] font-extrabold text-[#2D0A1E]">
             {partnerPresenceDisplay.label}
           </p>
@@ -535,7 +683,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
       {/* Collapsible VITE Supabase Config Panel inside Chat */}
       {showSupabaseConfig && (
-        <div className="animate-bubble-pop">
+        <div className="animate-bubble-pop shrink-0">
           <SupabaseConfigCard
             compact
             onConnected={() => {
@@ -547,17 +695,17 @@ export const ChatView: React.FC<ChatViewProps> = ({
       )}
 
       {copiedToast && (
-        <div className="animate-bubble-pop rounded-full bg-white px-4 py-1.5 text-center text-xs font-bold text-[#E91E7A] shadow border border-[#FFD6E7]">
+        <div className="animate-bubble-pop shrink-0 rounded-full border border-[#FFD6E7] bg-white px-4 py-1.5 text-center text-xs font-bold text-[#E91E7A] shadow">
           {copiedToast}
         </div>
       )}
 
-      {/* WhatsApp-Style Chat Feed */}
+      {/* Full-Height WhatsApp-Style Chat Feed */}
       <div
         onClick={() => setActiveBubbleMenu(null)}
-        className="keiz-card flex h-[340px] flex-col space-y-2.5 overflow-y-auto bg-white/95 p-3.5"
+        className="keiz-card flex min-h-0 flex-1 flex-col space-y-2.5 overflow-y-auto bg-white/95 p-3.5"
       >
-        <div className="mx-auto rounded-full bg-[#FFE3EE] px-3 py-0.5 text-[10px] font-extrabold tracking-wider text-[#D81B6E]">
+        <div className="mx-auto shrink-0 rounded-full bg-[#FFE3EE] px-3 py-0.5 text-[10px] font-extrabold tracking-wider text-[#D81B6E]">
           HARI INI
         </div>
 
@@ -578,31 +726,16 @@ export const ChatView: React.FC<ChatViewProps> = ({
               />
             </svg>
             <p className="mt-2 text-xs font-extrabold text-[#5C3A49]">
-              Belum ada chat nih, yuk chat pertama
+              Belum ada chat, mulai ngobrol sekarang
             </p>
-            <button
-              type="button"
-              onClick={() => {
-                soundFX.playHeartBurst();
-                handleSend(
-                  currentUser === 'faiz'
-                    ? `haloo ${profile.kenatName} cantikk, lagi ngapain? 💙`
-                    : `haloo ${profile.faizName} gantengg, kangen nih 💖`
-                );
-              }}
-              className="keiz-btn-primary btn-bucin mt-3 min-h-[40px] px-5 text-xs cursor-pointer"
-            >
-              Chat Pertama
-            </button>
           </div>
         )}
 
         {messages.map((msg) => {
           const isMine = msg.sender === currentUser;
-          const isFaizMsg = msg.sender === 'faiz';
           const bubbleColor = msg.is_deleted
             ? 'bg-slate-200 !text-slate-500'
-            : isFaizMsg
+            : isMine
             ? 'bg-[#3B82F6]'
             : 'bg-[#FF4D8D]';
 
@@ -610,6 +743,13 @@ export const ChatView: React.FC<ChatViewProps> = ({
             <div
               key={msg.id}
               onClick={(e) => e.stopPropagation()}
+              onContextMenu={(e) => {
+                if (msg.is_deleted || msg.sending) return;
+                e.preventDefault();
+                soundFX.playClick();
+                setActiveBubbleMenu(null);
+                setReactTargetMsg(msg);
+              }}
               onDoubleClick={() => {
                 if (!msg.is_deleted) {
                   setActiveBubbleMenu((cur) => (cur === msg.id ? null : msg.id));
@@ -617,10 +757,13 @@ export const ChatView: React.FC<ChatViewProps> = ({
               }}
               onTouchStart={(e) => {
                 if (msg.is_deleted) return;
+                longPressFiredRef.current = false;
                 touchStartX.current = e.touches[0].clientX;
                 longPressTimer.current = window.setTimeout(() => {
+                  longPressFiredRef.current = true;
                   soundFX.playClick();
-                  setActiveBubbleMenu(msg.id);
+                  setActiveBubbleMenu(null);
+                  setReactTargetMsg(msg);
                 }, 420);
               }}
               onTouchMove={(e) => {
@@ -646,10 +789,14 @@ export const ChatView: React.FC<ChatViewProps> = ({
               }}
               className={`animate-pop-up relative flex flex-col ${
                 isMine ? 'items-end' : 'items-start'
-              }`}
+              } ${msg.react && !msg.is_deleted ? 'mb-2' : ''}`}
             >
               <div
                 onClick={() => {
+                  if (longPressFiredRef.current) {
+                    longPressFiredRef.current = false;
+                    return;
+                  }
                   if (msg.failed) {
                     void handleRetrySend(msg);
                     return;
@@ -670,11 +817,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   <>
                     {/* Quoted Reply inside bubble */}
                     {msg.reply_to_text && (
-                      <div className="mb-1.5 rounded-xl bg-black/15 px-2.5 py-1.5 text-[11px] border-l-[3px] border-white/80">
+                      <div className="mb-1.5 rounded-xl border-l-[3px] border-white/80 bg-black/15 px-2.5 py-1.5 text-[11px]">
                         <p className="font-extrabold opacity-90">
-                          {msg.reply_to_sender === 'faiz'
-                            ? profile.faizName
-                            : profile.kenatName}
+                          {msg.reply_to_sender === 'faiz' ? 'faiz' : 'kenat'}
                         </p>
                         <p className="line-clamp-1 opacity-85">{msg.reply_to_text}</p>
                       </div>
@@ -698,43 +843,15 @@ export const ChatView: React.FC<ChatViewProps> = ({
                         }}
                         className="flex items-center gap-2 py-0.5 text-left"
                       >
-                        <span className="flex h-7 w-7 items-center justify-center rounded-full bg-white/25 text-xs">
-                          ▶
+                        <span className="flex h-7 w-7 items-center justify-center rounded-full bg-white/25">
+                          <Play className="ml-0.5 h-3.5 w-3.5 fill-current" />
                         </span>
                         <span className="text-xs font-bold">
-                          Voice note ({msg.voice_duration || '0:04'}) 🎵
+                          Voice note ({msg.voice_duration || '0:04'})
                         </span>
                       </button>
                     ) : (
                       <span>{msg.message}</span>
-                    )}
-
-                    {msg.type === 'nobar_link' && (
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onNavigate('nobar');
-                        }}
-                        className="mt-2 flex items-center gap-1.5 rounded-xl bg-white/25 px-3 py-1.5 text-[11px] font-extrabold text-white cursor-pointer"
-                      >
-                        <Film className="h-3.5 w-3.5" />
-                        <span>Buka di Nobar</span>
-                      </button>
-                    )}
-
-                    {msg.type === 'music_link' && (
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onNavigate('lagu');
-                        }}
-                        className="mt-2 flex items-center gap-1.5 rounded-xl bg-white/25 px-3 py-1.5 text-[11px] font-extrabold text-white cursor-pointer"
-                      >
-                        <Music2 className="h-3.5 w-3.5" />
-                        <span>Dengerin Bareng</span>
-                      </button>
                     )}
                   </>
                 )}
@@ -754,14 +871,18 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     ))}
                 </div>
 
-                {/* Attached Reaction Pill at corner */}
+                {/* Attached Reaction Pill at corner (click to remove/toggle) */}
                 {msg.react && !msg.is_deleted && (
                   <button
                     type="button"
-                    onClick={(e) => handleReact(msg, msg.react!, e)}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void handleReactBadgeClick(msg, msg.react!, e);
+                    }}
+                    title="Tap untuk hapus react"
                     className={`absolute -bottom-2.5 ${
                       isMine ? 'left-2' : 'right-2'
-                    } rounded-full border border-[#FFD6E7] bg-white px-1.5 py-0.5 text-xs shadow`}
+                    } rounded-full border border-[#FFD6E7] bg-white px-1.5 py-0.5 text-xs shadow cursor-pointer`}
                   >
                     {msg.react}
                   </button>
@@ -786,78 +907,76 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 </div>
               )}
 
-              {/* Floating React + Context Action Bar */}
+              {/* Context Action Bar (opens Full Emoji Picker when clicking React) */}
               {activeBubbleMenu === msg.id && !msg.is_deleted && (
                 <div
-                  className={`animate-bubble-pop z-30 mt-2 flex flex-col gap-1.5 rounded-2xl border border-[#FFD6E7] bg-white p-2 shadow-xl ${
-                    isMine ? 'items-end' : 'items-start'
+                  className={`animate-bubble-pop z-30 mt-2 flex flex-wrap gap-1.5 rounded-2xl border border-[#FFD6E7] bg-white p-2 text-[11px] font-bold shadow-xl ${
+                    isMine ? 'justify-end' : 'justify-start'
                   }`}
                 >
-                  <div className="flex items-center gap-1">
-                    {REACTS.map((emoji) => (
-                      <button
-                        key={emoji}
-                        type="button"
-                        onClick={(e) => handleReact(msg, emoji, e)}
-                        className="btn-bucin flex h-8 w-8 items-center justify-center rounded-full text-base hover:bg-[#FFF2F7] cursor-pointer"
-                      >
-                        {emoji}
-                      </button>
-                    ))}
-                  </div>
-                  <div className="flex flex-wrap gap-1.5 border-t border-[#FFD6E7] pt-1.5 text-[11px] font-bold">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setReplyingTo(msg);
-                        setActiveBubbleMenu(null);
-                      }}
-                      className="rounded-lg bg-[#FFF2F7] px-2 py-1 text-[#2D0A1E] cursor-pointer"
-                    >
-                      Balas
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        navigator.clipboard?.writeText(msg.message).catch(() => {});
-                        setActiveBubbleMenu(null);
-                        setCopiedToast('Teks disalin 📋');
-                        setTimeout(() => setCopiedToast(null), 1500);
-                      }}
-                      className="rounded-lg bg-[#FFF2F7] px-2 py-1 text-[#2D0A1E] cursor-pointer"
-                    >
-                      Salin
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onForwardToUnek(msg.message);
-                        setActiveBubbleMenu(null);
-                        setCopiedToast('Diteruskan ke Unek Unek 💭');
-                        setTimeout(() => setCopiedToast(null), 1800);
-                      }}
-                      className="rounded-lg bg-[#FFF2F7] px-2 py-1 text-[#E91E7A] cursor-pointer"
-                    >
-                      Teruskan ke Unek Unek
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleDelete(msg.id)}
-                      className="rounded-lg bg-rose-50 px-2 py-1 text-rose-600 cursor-pointer"
-                    >
-                      Hapus
-                    </button>
-                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      soundFX.playClick();
+                      setActiveBubbleMenu(null);
+                      setReactTargetMsg(msg);
+                    }}
+                    className="inline-flex items-center gap-1 rounded-lg bg-[#FFE3EE] px-2.5 py-1 text-[#D81B6E] cursor-pointer"
+                  >
+                    <Smile className="h-3.5 w-3.5" />
+                    <span>React</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setReplyingTo(msg);
+                      setActiveBubbleMenu(null);
+                    }}
+                    className="rounded-lg bg-[#FFF2F7] px-2.5 py-1 text-[#2D0A1E] cursor-pointer"
+                  >
+                    Balas
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      navigator.clipboard?.writeText(msg.message).catch(() => {});
+                      setActiveBubbleMenu(null);
+                      setCopiedToast('Teks disalin');
+                      setTimeout(() => setCopiedToast(null), 1500);
+                    }}
+                    className="rounded-lg bg-[#FFF2F7] px-2.5 py-1 text-[#2D0A1E] cursor-pointer"
+                  >
+                    Salin
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onForwardToUnek(msg.message);
+                      setActiveBubbleMenu(null);
+                      setCopiedToast('Diteruskan ke Unek Unek');
+                      setTimeout(() => setCopiedToast(null), 1800);
+                    }}
+                    className="rounded-lg bg-[#FFF2F7] px-2.5 py-1 text-[#E91E7A] cursor-pointer"
+                  >
+                    Teruskan ke Unek Unek
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleDelete(msg.id)}
+                    className="rounded-lg bg-rose-50 px-2.5 py-1 text-rose-600 cursor-pointer"
+                  >
+                    Hapus
+                  </button>
                 </div>
               )}
             </div>
           );
         })}
 
-        {/* Typing Indicator */}
-        {partnerTyping && (
-          <div className="flex items-center gap-2 text-[11px] font-bold text-[#8A6A7A]">
-            <span>{partnerName} sedang mengetik</span>
+        {/* REAL Partner Typing Indicator (ONLY when partner is online & genuinely typing) */}
+        {partnerTyping && isPartnerOnline && (
+          <div className="flex items-center gap-1.5 pt-0.5 text-[11px] font-bold text-[#8A6A7A]">
+            <span>{partnerName} sedang mengetik...</span>
             <span className="flex gap-1">
               <span className="animate-typing-dot-1 h-1.5 w-1.5 rounded-full bg-[#FF4D8D]" />
               <span className="animate-typing-dot-2 h-1.5 w-1.5 rounded-full bg-[#FF4D8D]" />
@@ -868,26 +987,12 @@ export const ChatView: React.FC<ChatViewProps> = ({
         <div ref={listEndRef} />
       </div>
 
-      {/* Quick Replies */}
-      <div className="flex gap-1.5 overflow-x-auto pb-0.5">
-        {QUICK_REPLIES[currentUser].map((chip) => (
-          <button
-            key={chip}
-            type="button"
-            onClick={() => handleSend(chip)}
-            className="btn-bucin shrink-0 rounded-full border border-[#FFD6E7] bg-white px-3 py-1.5 text-[11px] font-bold text-[#2D0A1E] shadow-sm cursor-pointer"
-          >
-            {chip}
-          </button>
-        ))}
-      </div>
-
       {/* Replying-to Banner */}
       {replyingTo && (
-        <div className="animate-bubble-pop flex items-center justify-between rounded-2xl border border-[#FFD6E7] bg-white px-3.5 py-2 text-xs">
+        <div className="animate-bubble-pop flex shrink-0 items-center justify-between rounded-2xl border border-[#FFD6E7] bg-white px-3.5 py-2 text-xs">
           <div className="min-w-0 flex-1 border-l-[3px] border-[#FF2E7E] pl-2.5">
             <p className="text-[10px] font-extrabold text-[#E91E7A]">
-              Membalas {replyingTo.sender === 'faiz' ? profile.faizName : profile.kenatName}
+              Membalas {replyingTo.sender === 'faiz' ? 'faiz' : 'kenat'}
             </p>
             <p className="truncate text-[#8A6A7A]">{replyingTo.message}</p>
           </div>
@@ -901,27 +1006,29 @@ export const ChatView: React.FC<ChatViewProps> = ({
         </div>
       )}
 
-      {/* + Attachment Drawer or Sticker Picker */}
+      {/* + Attachment Drawer */}
       {showPlusMenu && (
-        <div className="animate-bubble-pop grid grid-cols-2 gap-2 rounded-2xl border border-[#FFD6E7] bg-white p-2.5 text-xs font-bold">
+        <div className="animate-bubble-pop grid shrink-0 grid-cols-2 gap-2 rounded-2xl border border-[#FFD6E7] bg-white p-2.5 text-xs font-bold">
           <button
             type="button"
             onClick={() => fileRef.current?.click()}
             className="flex items-center justify-center gap-1.5 rounded-xl bg-[#EFF6FF] py-2.5 text-[#3B82F6] cursor-pointer"
           >
-            <Camera className="h-4 w-4" /> Foto
+            <Camera className="h-4 w-4" />
+            <span>Foto</span>
           </button>
           <button
             type="button"
             onClick={() => {
               setShowPlusMenu(false);
               onForwardToUnek(input.trim() || 'kangen kamu nihh');
-              setCopiedToast('Masuk ke Unek Unek 💭');
+              setCopiedToast('Masuk ke Unek Unek');
               setTimeout(() => setCopiedToast(null), 1600);
             }}
             className="flex items-center justify-center gap-1.5 rounded-xl bg-[#FFF7E6] py-2.5 text-[#B7791F] cursor-pointer"
           >
-            💭 Unek
+            <Heart className="h-4 w-4" />
+            <span>Unek</span>
           </button>
           <input
             ref={fileRef}
@@ -933,35 +1040,36 @@ export const ChatView: React.FC<ChatViewProps> = ({
         </div>
       )}
 
-      {showStickers && (
-        <div className="animate-bubble-pop grid grid-cols-2 gap-2 rounded-2xl border border-[#FFD6E7] bg-white p-2.5">
-          {STICKERS.map((st) => (
-            <button
-              key={st}
-              type="button"
-              onClick={() => handleSend(st, { type: 'sticker' })}
-              className="btn-bucin rounded-xl border border-[#FFD6E7] bg-[#FFF2F7] px-3 py-2 text-xs font-extrabold text-[#D81B6E] cursor-pointer"
-            >
-              {st}
-            </button>
-          ))}
+      {/* Inline Full Emoji Picker for Input */}
+      {showInputEmojiPicker && (
+        <div className="animate-bubble-pop shrink-0 overflow-hidden rounded-2xl border border-[#FFD6E7] bg-white shadow-lg">
+          <EmojiPicker
+            width="100%"
+            height={300}
+            searchPlaceholder="Cari emot..."
+            emojiStyle={EmojiStyle.NATIVE}
+            theme={Theme.LIGHT}
+            lazyLoadEmojis
+            previewConfig={{ showPreview: false }}
+            onEmojiClick={handlePickerInputSelect}
+          />
         </div>
       )}
 
-      {/* Input Row */}
+      {/* Input Row (sticky bottom inside flex column) */}
       <form
         onSubmit={(e) => {
           e.preventDefault();
-          handleSend();
+          void handleSend();
         }}
-        className="flex items-center gap-1.5"
+        className="flex shrink-0 items-center gap-1.5 pt-0.5"
       >
         <button
           type="button"
           onClick={() => {
             soundFX.playClick();
             setShowPlusMenu((v) => !v);
-            setShowStickers(false);
+            setShowInputEmojiPicker(false);
           }}
           aria-label="Lampiran"
           className="btn-bucin flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-[#FFD6E7] bg-white text-[#E91E7A] cursor-pointer"
@@ -973,11 +1081,15 @@ export const ChatView: React.FC<ChatViewProps> = ({
           type="button"
           onClick={() => {
             soundFX.playClick();
-            setShowStickers((v) => !v);
+            setShowInputEmojiPicker((v) => !v);
             setShowPlusMenu(false);
           }}
-          aria-label="Stiker"
-          className="btn-bucin flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-[#FFD6E7] bg-white text-[#FF4D8D] cursor-pointer"
+          aria-label="Pilih emot"
+          className={`btn-bucin flex h-11 w-11 shrink-0 items-center justify-center rounded-full border cursor-pointer ${
+            showInputEmojiPicker
+              ? 'border-[#FF2E7E] bg-[#FFE3EE] text-[#D81B6E]'
+              : 'border-[#FFD6E7] bg-white text-[#FF4D8D]'
+          }`}
         >
           <Smile className="h-5 w-5" />
         </button>
@@ -985,13 +1097,12 @@ export const ChatView: React.FC<ChatViewProps> = ({
         <input
           type="text"
           value={input}
-          onChange={(e) => setInput(e.target.value)}
+          onChange={(e) => handleInputChange(e.target.value)}
+          onBlur={stopOwnTyping}
           placeholder={
-            currentUser === 'faiz'
-              ? `ketik buat ${profile.kenatName} cantikk...`
-              : `ketik buat ${profile.faizName} gantengg...`
+            currentUser === 'faiz' ? 'ketik buat kenat...' : 'ketik buat faiz...'
           }
-          className="min-h-[46px] flex-1 rounded-full border border-[#FFD6E7] bg-white px-4 text-xs font-semibold text-[#2D0A1E] placeholder-[#9A7A8A] focus:outline-none focus:border-[#FF2E7E]"
+          className="min-h-[44px] flex-1 rounded-full border border-[#FFD6E7] bg-white px-4 text-xs font-semibold text-[#2D0A1E] placeholder-[#9A7A8A] focus:border-[#FF2E7E] focus:outline-none"
         />
 
         {input.trim() ? (
@@ -1021,6 +1132,59 @@ export const ChatView: React.FC<ChatViewProps> = ({
           </button>
         )}
       </form>
+
+      {/* Full Emoji Picker Popup for Message Reaction */}
+      {reactTargetMsg && (
+        <div
+          onClick={() => setReactTargetMsg(null)}
+          className="fixed inset-0 z-50 flex items-end justify-center bg-[#2D0A1E]/45 p-3 backdrop-blur-sm sm:items-center"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="animate-slide-up-bounce w-full max-w-[406px] overflow-hidden rounded-[24px] border border-[#FFD6E7] bg-white p-3 shadow-2xl"
+          >
+            <div className="mb-2 flex items-center justify-between px-1">
+              <div className="min-w-0 flex-1 pr-2">
+                <p className="text-xs font-extrabold text-[#D81B6E]">
+                  Pilih react emot
+                </p>
+                <p className="truncate text-[11px] font-semibold text-[#8A6A7A]">
+                  {reactTargetMsg.message || 'Foto / Voice note'}
+                </p>
+              </div>
+              {reactTargetMsg.react && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    void applyReactionToMessage(reactTargetMsg, reactTargetMsg.react!)
+                  }
+                  className="mr-1.5 shrink-0 rounded-full border border-rose-200 bg-rose-50 px-2.5 py-1 text-[10px] font-extrabold text-rose-600 cursor-pointer"
+                >
+                  Hapus react
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setReactTargetMsg(null)}
+                aria-label="Tutup picker react"
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#FFF2F7] text-[#8A6A7A] cursor-pointer"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <EmojiPicker
+              width="100%"
+              height={360}
+              searchPlaceholder="Cari emot..."
+              emojiStyle={EmojiStyle.NATIVE}
+              theme={Theme.LIGHT}
+              lazyLoadEmojis
+              previewConfig={{ showPreview: false }}
+              onEmojiClick={handlePickerReactSelect}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 };

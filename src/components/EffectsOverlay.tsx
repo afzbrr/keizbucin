@@ -270,12 +270,18 @@ export const BurstLayer: React.FC<BurstLayerProps> = ({ particles }) => {
           style={{
             left: p.x,
             top: p.y,
-            fontSize: `${p.size}px`,
             transform: `translate(-50%, -50%) rotate(${p.rotation}deg)`,
-            color: p.color,
           }}
         >
-          {p.emoji}
+          <svg
+            width={p.size}
+            height={p.size}
+            viewBox="0 0 24 24"
+            fill={p.color}
+            className="drop-shadow-xs"
+          >
+            <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" />
+          </svg>
         </span>
       ))}
     </div>
@@ -293,8 +299,8 @@ export const PelukOverlay: React.FC<{ active: boolean; senderName: string }> = (
         left: `${(i * 3.4) % 98}%`,
         delay: `${(i % 7) * 0.14}s`,
         duration: `${1.8 + (i % 4) * 0.35}s`,
-        emoji: i % 3 === 0 ? '💙' : i % 3 === 1 ? '💖' : '🫂',
-        size: 20 + (i % 3) * 8,
+        color: i % 3 === 0 ? '#3B82F6' : i % 3 === 1 ? '#FF2E7E' : '#FF7AB8',
+        size: 16 + (i % 3) * 6,
       })),
     []
   );
@@ -311,23 +317,28 @@ export const PelukOverlay: React.FC<{ active: boolean; senderName: string }> = (
             left: d.left,
             animationDelay: d.delay,
             animationDuration: d.duration,
-            fontSize: `${d.size}px`,
           }}
         >
-          {d.emoji}
+          <svg width={d.size} height={d.size} viewBox="0 0 24 24" fill={d.color}>
+            <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" />
+          </svg>
         </span>
       ))}
 
       <div className="animate-bear-hug relative z-10 flex max-w-[330px] flex-col items-center rounded-[24px] border border-[#FFD6E7] bg-white px-7 py-6 text-center shadow-2xl">
-        <div className="flex items-center gap-1 text-7xl leading-none">
-          <span>🧸</span>
-          <span>🫂</span>
+        <div className="flex items-center justify-center gap-1">
+          <svg width="56" height="56" viewBox="0 0 24 24" fill="#3B82F6" className="-mr-3 drop-shadow">
+            <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" />
+          </svg>
+          <svg width="56" height="56" viewBox="0 0 24 24" fill="#FF2E7E" className="drop-shadow">
+            <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" />
+          </svg>
         </div>
         <p className="mt-4 text-xl font-extrabold text-[#E91E7A]">
           PELUUUK ERATTT!!
         </p>
         <p className="mt-1.5 text-sm text-[#6E5460]">
-          kiriman peluk paling anget dr {senderName}, awas sesek ya honeyy 💙💖
+          kiriman peluk paling anget dr {senderName}, awas sesek ya
         </p>
       </div>
     </div>
@@ -345,8 +356,8 @@ export const KangenOverlay: React.FC<{ active: boolean; senderName: string }> = 
         left: `${(i * 3.2) % 98}%`,
         delay: `${(i % 6) * 0.13}s`,
         duration: `${1.7 + (i % 4) * 0.4}s`,
-        emoji: i % 3 === 0 ? '😭' : i % 3 === 1 ? '💖' : '💙',
-        size: 22 + (i % 3) * 8,
+        color: i % 3 === 0 ? '#FFFFFF' : i % 3 === 1 ? '#FF2E7E' : '#3B82F6',
+        size: 16 + (i % 3) * 6,
       })),
     []
   );
@@ -363,19 +374,20 @@ export const KangenOverlay: React.FC<{ active: boolean; senderName: string }> = 
             left: d.left,
             animationDelay: d.delay,
             animationDuration: d.duration,
-            fontSize: `${d.size}px`,
           }}
         >
-          {d.emoji}
+          <svg width={d.size} height={d.size} viewBox="0 0 24 24" fill={d.color}>
+            <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" />
+          </svg>
         </span>
       ))}
 
       <div className="animate-kangen-wobble relative z-10 px-6 text-center">
         <p className="text-4xl font-extrabold tracking-tight text-white drop-shadow-[0_4px_18px_rgba(216,27,110,0.6)]">
-          KANGEN BANGET 😭
+          KANGEN BANGET
         </p>
         <p className="mt-2.5 inline-block rounded-2xl bg-white/95 px-4 py-2 text-sm font-bold text-[#D81B6E] shadow-lg">
-          {senderName} lagi kangen parah nihh, cepetan ketemu pliss 🥺💖
+          {senderName} lagi kangen parah nihh, cepetan ketemu pliss
         </p>
       </div>
     </div>

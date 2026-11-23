@@ -7,13 +7,12 @@ import {
   Play,
   Plus,
   Search,
-  Share2,
   SkipBack,
   SkipForward,
   X,
   Youtube,
 } from 'lucide-react';
-import { isPresenceOnline, sendChatMessage } from '../supabaseClient';
+import { isPresenceOnline } from '../supabaseClient';
 import { soundFX } from '../sound';
 import type {
   CoupleProfile,
@@ -117,6 +116,7 @@ export const LaguView: React.FC<LaguViewProps> = ({
     musicRoomMembers.includes(partnerRole) ||
     (partnerOnline &&
       (partnerPresence?.lagi_ngapain === 'di Musik' ||
+        partnerPresence?.lagi_play_apa?.startsWith('MUSIC:') ||
         partnerPresence?.lagi_play_apa?.startsWith('🎵 ')));
 
   // iTunes Search API ONLY for cover, title, artist & real full duration
@@ -179,24 +179,6 @@ export const LaguView: React.FC<LaguViewProps> = ({
     setTimeout(() => setToast(null), 2000);
   };
 
-  const handleShareSongToChat = async () => {
-    if (!activeSong) return;
-    soundFX.playHeartBurst();
-    const url =
-      activeSong.youtube_video_id || musicSync?.videoId
-        ? `https://www.youtube.com/watch?v=${
-            activeSong.youtube_video_id || musicSync?.videoId
-          }`
-        : '';
-    await sendChatMessage(
-      currentUser,
-      `Lagi muter "${activeSong.title} - ${activeSong.artist}", dengerin bareng yuk! 🎵 ${url}`,
-      { type: 'music_link' }
-    );
-    setToast(`Lagu dikirim ke chat ${partnerName} 🎵`);
-    setTimeout(() => setToast(null), 2200);
-  };
-
   const displayedQueue =
     tab === 'favorit'
       ? queue.filter((q) => q.favorite)
@@ -222,7 +204,7 @@ export const LaguView: React.FC<LaguViewProps> = ({
     : partnerName;
 
   return (
-    <div className="animate-slide-in-right flex flex-col gap-3.5 pb-8">
+    <div className="animate-slide-in-right flex flex-col gap-3.5 pb-3">
       {/* Header + Partner Live Avatar Status */}
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2.5">
@@ -266,8 +248,10 @@ export const LaguView: React.FC<LaguViewProps> = ({
           </div>
           <span className="max-w-[125px] truncate text-[10px] font-extrabold text-[#2D0A1E]">
             {partnerInMusic
-              ? isPlaying || partnerPresence?.lagi_play_apa?.startsWith('🎵 ')
-                ? `${partnerName} dengerin 🟢`
+              ? isPlaying ||
+                partnerPresence?.lagi_play_apa?.startsWith('MUSIC:') ||
+                partnerPresence?.lagi_play_apa?.startsWith('🎵 ')
+                ? `${partnerName} dengerin`
                 : `${partnerName} di Musik`
               : partnerOnline
               ? `${partnerName} ${partnerPresence?.lagi_ngapain || 'online'}`
@@ -462,17 +446,6 @@ export const LaguView: React.FC<LaguViewProps> = ({
           </div>
 
           <div className="flex items-center gap-1.5">
-            {activeSong && (
-              <button
-                type="button"
-                onClick={handleShareSongToChat}
-                title="Kirim lagu ke chat"
-                className="btn-bucin flex h-9 items-center gap-1 rounded-full bg-[#3B82F6] px-3 text-[11px] font-extrabold text-white shadow-sm cursor-pointer"
-              >
-                <Share2 className="h-3.5 w-3.5" />
-                <span>Share</span>
-              </button>
-            )}
             <button
               type="button"
               onClick={() => {

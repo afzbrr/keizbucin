@@ -354,7 +354,7 @@ export const ProfilView: React.FC<ProfilViewProps> = ({
       ...(isFaiz ? { faizPhoto: compressed } : { kenatPhoto: compressed }),
     });
     setPhotoPrompt(null);
-    showToastMsg(`Foto profil ${myName} keganti 💖`);
+    showToastMsg(`Foto profil ${myName} keganti`);
   };
 
   const handleBannerSelected = async (
@@ -376,14 +376,14 @@ export const ProfilView: React.FC<ProfilViewProps> = ({
       ...(isFaiz ? { faizBanner: compressed } : { kenatBanner: compressed }),
     });
     setPhotoPrompt(null);
-    showToastMsg(`Foto latar ${myName} berhasil diganti 💖`);
+    showToastMsg(`Foto latar ${myName} berhasil diganti`);
   };
 
   const handleSaveEdit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!isViewingSelf) return;
     soundFX.playHeartBurst();
-    const cleanedName = draftName.trim() || (isFaiz ? 'Faiz' : 'Kenat');
+    const cleanedName = draftName.trim() || (isFaiz ? 'faiz' : 'kenat');
     const cleanedBio =
       draftBio.trim() || (isFaiz ? 'pacarnya kenat' : 'pacarnya faiz');
     const updated: CoupleProfile = isFaiz
@@ -398,7 +398,7 @@ export const ProfilView: React.FC<ProfilViewProps> = ({
         : { kenatName: cleanedName, kenatBio: cleanedBio }),
     });
     setShowEdit(false);
-    showToastMsg(`Profil ${cleanedName} berhasil disimpan 💖`);
+    showToastMsg(`Profil ${cleanedName} berhasil disimpan`);
   };
 
   const handleSelectProfileSong = async (track: ITunesTrack) => {
@@ -423,7 +423,7 @@ export const ProfilView: React.FC<ProfilViewProps> = ({
     setShowSongPicker(false);
     setSongQuery('');
     setSongResults([]);
-    showToastMsg(`Lagu ${myName} dipasang 💖`);
+    showToastMsg(`Lagu ${myName} dipasang`);
   };
 
   const handleDeleteProfileSong = async () => {
@@ -520,7 +520,7 @@ export const ProfilView: React.FC<ProfilViewProps> = ({
     soundFX.playHeartBurst();
     const saved = await addPostingan({
       author: currentUser,
-      caption: postCaption.trim() || 'momen gemes kita berdua 💖',
+      caption: postCaption.trim() || 'momen gemes kita berdua',
       image_url: postPhotoUrl,
     });
     if (saved) {
@@ -529,14 +529,14 @@ export const ProfilView: React.FC<ProfilViewProps> = ({
     setPostPhotoUrl('');
     setPostCaption('');
     setShowPostModal(false);
-    showToastMsg('Postingan baru berhasil dipajang 💖');
+    showToastMsg('Postingan baru berhasil dipajang');
   };
 
   const handleShareProfile = () => {
     soundFX.playPop();
     const shareText = `KEIZ BUCIN · ${viewedName} (Pasangannya ${viewedPartnerName}) · Tanggal pacaran 28 Agustus 2026`;
     navigator.clipboard?.writeText(shareText).catch(() => {});
-    showToastMsg('Info profil disalin ke clipboard 💖');
+    showToastMsg('Info profil disalin ke clipboard');
   };
 
   const viewedSongArt = songArtMap[viewingRole];
@@ -546,7 +546,7 @@ export const ProfilView: React.FC<ProfilViewProps> = ({
       onClick={() => {
         if (showSongMenu) setShowSongMenu(false);
       }}
-      className="animate-slide-in-right flex flex-col gap-3 pb-8"
+      className="animate-slide-in-right flex flex-col gap-3 pb-3"
     >
       {/* Hidden 1x1 YouTube Player for inline Profil song playback */}
       <div
@@ -840,7 +840,7 @@ export const ProfilView: React.FC<ProfilViewProps> = ({
                 )}
                 <div className="min-w-0 flex-1">
                   <p className="text-[10px] font-extrabold tracking-wider text-[#E91E7A]">
-                    LAGU {viewedName.toUpperCase()}
+                    Lagu {viewedName}
                   </p>
                   <p className="truncate text-[13px] font-extrabold text-[#2D0A1E]">
                     {viewedSong}
@@ -910,7 +910,7 @@ export const ProfilView: React.FC<ProfilViewProps> = ({
               <div className="flex items-center justify-between gap-3">
                 <div className="min-w-0 flex-1">
                   <p className="text-[10px] font-extrabold tracking-wider text-[#E91E7A]">
-                    LAGU {viewedName.toUpperCase()}
+                    Lagu {viewedName}
                   </p>
                   <p className="mt-0.5 text-xs font-bold text-[#5C3A49]">
                     Belum ada lagu
@@ -1274,7 +1274,7 @@ export const ProfilView: React.FC<ProfilViewProps> = ({
                 disabled={!postPhotoUrl}
                 className="keiz-btn-primary btn-bucin min-h-[46px] text-xs disabled:opacity-45 cursor-pointer"
               >
-                Posting 💖
+                Posting
               </button>
             </div>
           </form>
@@ -1344,7 +1344,7 @@ export const ProfilView: React.FC<ProfilViewProps> = ({
                 type="submit"
                 className="keiz-btn-primary btn-bucin min-h-[48px] text-xs cursor-pointer"
               >
-                Simpan 💖
+                Simpan
               </button>
             </div>
           </form>

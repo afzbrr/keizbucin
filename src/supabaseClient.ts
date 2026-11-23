@@ -157,7 +157,7 @@ function initSupabaseClient(): SupabaseClient | null {
     currentConnectionState = {
       status: 'error',
       ok: false,
-      message: 'Gagal ❌ — URL atau Anon Key Supabase belum diisi.',
+      message: 'Gagal - URL atau Anon Key Supabase belum diisi.',
       checkedAt: Date.now(),
     };
     notifyConnectionListeners();
@@ -244,7 +244,7 @@ async function runUsersKeizQuery(client: SupabaseClient): Promise<SupabaseConnec
       return {
         status: 'connected',
         ok: true,
-        message: 'Terhubung ✅',
+        message: 'Terhubung',
         checkedAt: Date.now(),
       };
     }
@@ -259,7 +259,7 @@ async function runUsersKeizQuery(client: SupabaseClient): Promise<SupabaseConnec
         status: 'connected',
         ok: true,
         missingTables: true,
-        message: 'Terhubung ✅ (jalankan supabase-setup.sql di SQL Editor Supabase)',
+        message: 'Terhubung (jalankan supabase-setup.sql di SQL Editor Supabase)',
         checkedAt: Date.now(),
       };
     }
@@ -273,7 +273,7 @@ async function runUsersKeizQuery(client: SupabaseClient): Promise<SupabaseConnec
       return {
         status: 'error',
         ok: false,
-        message: 'Gagal ❌ — Anon Key Supabase ditolak.',
+        message: 'Gagal - Anon Key Supabase ditolak.',
         checkedAt: Date.now(),
       };
     }
@@ -282,7 +282,7 @@ async function runUsersKeizQuery(client: SupabaseClient): Promise<SupabaseConnec
       return {
         status: 'error',
         ok: false,
-        message: 'Gagal ❌ — Koneksi ke Supabase timeout.',
+        message: 'Gagal - Koneksi ke Supabase timeout.',
         checkedAt: Date.now(),
       };
     }
@@ -290,14 +290,14 @@ async function runUsersKeizQuery(client: SupabaseClient): Promise<SupabaseConnec
     return {
       status: 'error',
       ok: false,
-      message: `Gagal ❌ — ${error.message}`,
+      message: `Gagal - ${error.message}`,
       checkedAt: Date.now(),
     };
   } catch {
     return {
       status: 'error',
       ok: false,
-      message: 'Gagal ❌ — Tidak bisa menghubungi server Supabase.',
+      message: 'Gagal - Tidak bisa menghubungi server Supabase.',
       checkedAt: Date.now(),
     };
   }
@@ -316,7 +316,7 @@ export async function checkSupabaseConnection(
     const invalidResult: SupabaseConnectionResult = {
       status: 'error',
       ok: false,
-      message: 'Gagal ❌ — URL atau Anon Key Supabase belum diisi.',
+      message: 'Gagal - URL atau Anon Key Supabase belum diisi.',
       checkedAt: Date.now(),
     };
     if (!isCustomTest) {
@@ -455,6 +455,12 @@ create table if not exists public.keiz_chat (
   react text
 );
 
+create table if not exists public.keiz_typing (
+  user_name text primary key,
+  is_typing boolean default false,
+  updated_at timestamptz default now()
+);
+
 create table if not exists public.keiz_nobar_sync (
   id int primary key default 1,
   youtube_url text default '',
@@ -523,7 +529,7 @@ create table if not exists public.unek_unek_keiz (
   id text primary key,
   author text not null,
   isi text not null,
-  mood text default 'Kangen 😭',
+  mood text default 'Kangen',
   reply text,
   is_anonymous boolean default false,
   created_at timestamptz default now()
@@ -553,8 +559,11 @@ alter table public.postingan_keiz enable row level security;
 alter table public.unek_unek_keiz enable row level security;
 alter table public.lagu_keiz enable row level security;
 
+alter table public.keiz_typing enable row level security;
+
 create policy "allow_all_users_keiz" on public.users_keiz for all using (true) with check (true);
 create policy "allow_all_keiz_chat" on public.keiz_chat for all using (true) with check (true);
+create policy "allow_all_keiz_typing" on public.keiz_typing for all using (true) with check (true);
 create policy "allow_all_keiz_nobar_sync" on public.keiz_nobar_sync for all using (true) with check (true);
 create policy "allow_all_keiz_music_sync" on public.keiz_music_sync for all using (true) with check (true);
 create policy "allow_all_keiz_album" on public.keiz_album for all using (true) with check (true);
@@ -585,7 +594,7 @@ insert into public.keiz_music_sync (id, youtube_url, "videoId", title, artist, t
 values (1, '', '', '', '', '', 213000, false, 0, 'Faiz', 'change_song')
 on conflict (id) do nothing;
 
-alter publication supabase_realtime add table public.users_keiz, public.keiz_chat, public.keiz_nobar_sync, public.keiz_music_sync, public.keiz_album, public.presence_keiz, public.call_keiz, public.postingan_keiz, public.unek_unek_keiz, public.lagu_keiz;`;
+alter publication supabase_realtime add table public.users_keiz, public.keiz_chat, public.keiz_typing, public.keiz_nobar_sync, public.keiz_music_sync, public.keiz_album, public.presence_keiz, public.call_keiz, public.postingan_keiz, public.unek_unek_keiz, public.lagu_keiz;`;
 
 const localChannel =
   typeof BroadcastChannel !== 'undefined'
@@ -622,9 +631,24 @@ function sanitizeUserBanner(val: unknown): string {
   return s;
 }
 
+function stripDecorEmojis(text: string): string {
+  return text
+    .replace(/[\p{Extended_Pictographic}\uFE0F\u200D]/gu, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
+function normalizeDisplayName(raw: unknown, fallback: Role): string {
+  const cleaned = stripDecorEmojis(String(raw || '')).toLowerCase();
+  if (!cleaned) return fallback;
+  if (cleaned.includes('faiz')) return 'faiz';
+  if (cleaned.includes('kenat')) return 'kenat';
+  return cleaned;
+}
+
 export const DEFAULT_PROFILE: CoupleProfile = {
-  faizName: 'Faiz',
-  kenatName: 'Kenat',
+  faizName: 'faiz',
+  kenatName: 'kenat',
   faizPhoto: '/src/assets/images/avatar_faiz_1795263046125.jpg',
   kenatPhoto: '/src/assets/images/avatar_kenat_1795263046413.jpg',
   faizBanner: '',
@@ -760,8 +784,8 @@ export async function fetchProfile(): Promise<CoupleProfile> {
       ) as Record<string, unknown> | undefined;
 
       return {
-        faizName: String(faizRow?.nama || DEFAULT_PROFILE.faizName),
-        kenatName: String(kenatRow?.nama || DEFAULT_PROFILE.kenatName),
+        faizName: normalizeDisplayName(faizRow?.nama, 'faiz'),
+        kenatName: normalizeDisplayName(kenatRow?.nama, 'kenat'),
         faizPhoto: String(faizRow?.foto_profil || DEFAULT_PROFILE.faizPhoto),
         kenatPhoto: String(kenatRow?.foto_profil || DEFAULT_PROFILE.kenatPhoto),
         faizBanner: sanitizeUserBanner(
@@ -770,8 +794,8 @@ export async function fetchProfile(): Promise<CoupleProfile> {
         kenatBanner: sanitizeUserBanner(
           kenatRow?.foto_latar ?? kenatRow?.cover_photo ?? kenatRow?.latar_foto
         ),
-        faizBio: String(faizRow?.bio || DEFAULT_PROFILE.faizBio),
-        kenatBio: String(kenatRow?.bio || DEFAULT_PROFILE.kenatBio),
+        faizBio: stripDecorEmojis(String(faizRow?.bio || DEFAULT_PROFILE.faizBio)) || DEFAULT_PROFILE.faizBio,
+        kenatBio: stripDecorEmojis(String(kenatRow?.bio || DEFAULT_PROFILE.kenatBio)) || DEFAULT_PROFILE.kenatBio,
         anniversaryDate: DEFAULT_PROFILE.anniversaryDate,
         faizSong: String(faizRow?.lagu_profil || ''),
         kenatSong: String(kenatRow?.lagu_profil || ''),
@@ -999,7 +1023,7 @@ export async function addPostingan(payload: {
     id: makeUuid(),
     author: payload.author,
     url: payload.image_url,
-    caption: payload.caption.trim() || 'momen gemes kita berdua 💖',
+    caption: payload.caption.trim() || 'momen gemes kita berdua',
     dateLabel: 'baru aja',
     tag: 'berdua',
     created_at: createdAt,
@@ -1635,7 +1659,7 @@ function mapChatRow(row: Record<string, unknown>, idx = 0): ChatMessage {
 
 let lastFetchErrorKey = '';
 
-export async function fetchChats(): Promise<ChatMessage[]> {
+export async function fetchChats(currentUser?: Role): Promise<ChatMessage[]> {
   const sb = activeClient;
   if (!sb) return [];
   try {
@@ -1676,14 +1700,34 @@ export async function fetchChats(): Promise<ChatMessage[]> {
       return [];
     }
     lastFetchErrorKey = '';
+    const userLower = currentUser ? currentUser.toLowerCase() : null;
+    const partnerLower = userLower
+      ? userLower === 'faiz'
+        ? 'kenat'
+        : 'faiz'
+      : null;
+
     return Array.isArray(data)
       ? data
           .map((row, idx) => mapChatRow(row as Record<string, unknown>, idx))
-          .filter(
-            (m) =>
-              (m.sender === 'faiz' && m.receiver === 'kenat') ||
-              (m.sender === 'kenat' && m.receiver === 'faiz')
-          )
+          .filter((m) => {
+            const s = m.sender.toLowerCase();
+            const r = m.receiver.toLowerCase();
+            const isValidType =
+              (m.type === 'text' || m.type === 'image' || m.type === 'voice') &&
+              !m.message.startsWith('[Unek-Unek]');
+            if (!isValidType) return false;
+            if (userLower && partnerLower) {
+              return (
+                (s === userLower && r === partnerLower) ||
+                (s === partnerLower && r === userLower)
+              );
+            }
+            return (
+              (s === 'faiz' && r === 'kenat') ||
+              (s === 'kenat' && r === 'faiz')
+            );
+          })
       : [];
   } catch (err) {
     console.warn('[KEIZ Chat fetchChats exception]', err);
@@ -1922,22 +1966,19 @@ export async function updateChatReact(id: string, react?: string): Promise<ChatM
   const sb = activeClient;
   if (sb) {
     try {
-      const schema = await discoverChatSchema(sb);
-      if (!schema || schema.columns.has('react')) {
-        const { error } = await sb
-          .from(CHAT_TABLE)
-          .update({ react: react ?? null })
-          .eq('id', id);
-        if (error) {
-          console.log(
-            '[KEIZ Chat react error]',
-            error,
-            error.message,
-            error.details,
-            error.hint,
-            error.code
-          );
-        }
+      const { error } = await sb
+        .from(CHAT_TABLE)
+        .update({ react: react ?? null })
+        .eq('id', id);
+      if (error) {
+        console.log(
+          '[KEIZ Chat react error]',
+          error,
+          error.message,
+          error.details,
+          error.hint,
+          error.code
+        );
       }
     } catch (err) {
       console.log('[KEIZ Chat react exception]', err);
@@ -2039,6 +2080,248 @@ export function subscribeChatRealtime(
     localChannel?.removeEventListener('message', handleLocal);
     if (chatChan && activeClient) {
       activeClient.removeChannel(chatChan);
+    }
+  };
+}
+
+export function subscribeIncomingChatNotification(
+  currentUser: Role,
+  onIncoming: (msg: ChatMessage) => void
+): () => void {
+  const userLower = currentUser.toLowerCase();
+  const partnerLower = userLower === 'faiz' ? 'kenat' : 'faiz';
+  const notifiedIds = new Set<string>();
+
+  const maybeNotify = (msg: ChatMessage) => {
+    if (!msg.id || notifiedIds.has(msg.id)) return;
+    const s = msg.sender.toLowerCase();
+    const r = msg.receiver.toLowerCase();
+    if (s !== partnerLower || r !== userLower) return;
+    if (
+      (msg.type !== 'text' && msg.type !== 'image' && msg.type !== 'voice') ||
+      msg.message.startsWith('[Unek-Unek]') ||
+      msg.is_deleted
+    ) {
+      return;
+    }
+    notifiedIds.add(msg.id);
+    if (notifiedIds.size > 200) {
+      const first = notifiedIds.values().next().value;
+      if (first) notifiedIds.delete(first);
+    }
+    onIncoming(msg);
+  };
+
+  const handleLocal = (ev: MessageEvent) => {
+    if (ev.data?.type === 'chat_update' && ev.data.payload) {
+      maybeNotify(ev.data.payload as ChatMessage);
+    }
+  };
+  localChannel?.addEventListener('message', handleLocal);
+
+  let notifChan: RealtimeChannel | null = null;
+  const setup = () => {
+    const sb = activeClient;
+    if (notifChan && sb) {
+      sb.removeChannel(notifChan);
+      notifChan = null;
+    }
+    if (!sb) return;
+    notifChan = sb
+      .channel('keiz_chat_notif')
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: CHAT_TABLE },
+        (payload) => {
+          maybeNotify(mapChatRow(payload.new as Record<string, unknown>));
+        }
+      )
+      .subscribe();
+  };
+
+  setup();
+  const unsubReconfig = onSupabaseReconfigured(setup);
+
+  return () => {
+    unsubReconfig();
+    localChannel?.removeEventListener('message', handleLocal);
+    if (notifChan && activeClient) {
+      activeClient.removeChannel(notifChan);
+    }
+  };
+}
+
+// ---------- REAL TYPING INDICATOR (Broadcast 'keiz_typing_room' + DB Fallback 'keiz_typing') ----------
+const TYPING_CHANNEL_NAME = 'keiz_typing_room';
+const TYPING_TABLE = 'keiz_typing';
+let activeTypingChannel: RealtimeChannel | null = null;
+let activeTypingSubscribed = false;
+
+function normalizeTypingRole(val: unknown): Role | null {
+  const s = String(val || '').trim().toLowerCase();
+  if (s === 'faiz') return 'faiz';
+  if (s === 'kenat') return 'kenat';
+  return null;
+}
+
+export function sendTypingBroadcast(user: Role, isTyping: boolean): void {
+  const userLower = user.toLowerCase() as Role;
+  const nowIso = new Date().toISOString();
+  const payload = { user: userLower, is_typing: isTyping };
+
+  localChannel?.postMessage({ type: TYPING_CHANNEL_NAME, payload });
+
+  // Cara 1 - Broadcast (utama)
+  if (activeTypingChannel && activeTypingSubscribed) {
+    activeTypingChannel
+      .send({
+        type: 'broadcast',
+        event: 'typing',
+        payload,
+      })
+      .catch(() => {});
+  }
+
+  // Cara 2 - Fallback tabel keiz_typing (user_name PK, is_typing, updated_at)
+  const sb = activeClient;
+  if (sb) {
+    Promise.resolve(
+      sb
+        .from(TYPING_TABLE)
+        .upsert(
+          {
+            user_name: userLower,
+            is_typing: isTyping,
+            updated_at: nowIso,
+          },
+          { onConflict: 'user_name' }
+        )
+    )
+      .then(({ error }) => {
+        if (error) {
+          // Abaikan jika tabel belum dibuat atau RLS belum dibuka; broadcast tetap jalan
+          console.log('[KEIZ Typing DB upsert note]', error.code, error.message);
+        }
+      })
+      .catch(() => {});
+  }
+}
+
+export function subscribeTypingBroadcast(
+  currentUser: Role,
+  onPartnerTyping: (
+    user: Role,
+    isTyping: boolean,
+    source: 'broadcast' | 'db',
+    updatedAtMs?: number
+  ) => void
+): () => void {
+  const currentLower = currentUser.toLowerCase() as Role;
+  const partnerLower: Role = currentLower === 'faiz' ? 'kenat' : 'faiz';
+
+  const handleDbRow = (row: Record<string, unknown> | null | undefined) => {
+    if (!row) return;
+    const rowUser = normalizeTypingRole(row.user_name ?? row.user);
+    if (!rowUser || rowUser !== partnerLower || rowUser === currentLower) return;
+
+    const rawUpdated = String(row.updated_at ?? '');
+    const updatedAtMs = rawUpdated ? Date.parse(rawUpdated) : 0;
+    const rawTyping = Boolean(row.is_typing);
+    const isFresh =
+      rawTyping &&
+      Number.isFinite(updatedAtMs) &&
+      Date.now() - updatedAtMs < 3000;
+
+    onPartnerTyping(partnerLower, isFresh, 'db', updatedAtMs || Date.now());
+  };
+
+  const handleLocal = (ev: MessageEvent) => {
+    if (ev.data?.type === TYPING_CHANNEL_NAME && ev.data.payload) {
+      const sender = normalizeTypingRole(ev.data.payload.user);
+      if (sender && sender === partnerLower && sender !== currentLower) {
+        onPartnerTyping(
+          partnerLower,
+          Boolean(ev.data.payload.is_typing),
+          'broadcast',
+          Date.now()
+        );
+      }
+    }
+  };
+  localChannel?.addEventListener('message', handleLocal);
+
+  const setup = () => {
+    const sb = activeClient;
+    activeTypingSubscribed = false;
+    if (activeTypingChannel && sb) {
+      sb.removeChannel(activeTypingChannel);
+      activeTypingChannel = null;
+    }
+    if (!sb) return;
+
+    const ch = sb
+      .channel(TYPING_CHANNEL_NAME, {
+        config: { broadcast: { self: false } },
+      })
+      .on('broadcast', { event: 'typing' }, ({ payload }) => {
+        if (!payload) return;
+        const sender = normalizeTypingRole((payload as { user?: unknown }).user);
+        if (sender && sender === partnerLower && sender !== currentLower) {
+          onPartnerTyping(
+            partnerLower,
+            Boolean((payload as { is_typing?: unknown }).is_typing),
+            'broadcast',
+            Date.now()
+          );
+        }
+      })
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: TYPING_TABLE },
+        (payload) => {
+          handleDbRow(payload.new as Record<string, unknown>);
+        }
+      )
+      .subscribe((status) => {
+        activeTypingSubscribed = status === 'SUBSCRIBED';
+      });
+    activeTypingChannel = ch;
+  };
+
+  setup();
+  const unsubReconfig = onSupabaseReconfigured(setup);
+
+  // Polling tiap 1 detik fallback tabel keiz_typing
+  const pollTyping = async () => {
+    const sb = activeClient;
+    if (!sb) return;
+    try {
+      const { data, error } = await sb
+        .from(TYPING_TABLE)
+        .select('*')
+        .eq('user_name', partnerLower)
+        .maybeSingle();
+      if (!error && data) {
+        handleDbRow(data as Record<string, unknown>);
+      }
+    } catch {
+      // ignore
+    }
+  };
+
+  void pollTyping();
+  const dbPollTimer = window.setInterval(() => {
+    void pollTyping();
+  }, 1000);
+
+  return () => {
+    window.clearInterval(dbPollTimer);
+    unsubReconfig();
+    localChannel?.removeEventListener('message', handleLocal);
+    activeTypingSubscribed = false;
+    if (activeTypingChannel && activeClient) {
+      activeClient.removeChannel(activeTypingChannel);
+      activeTypingChannel = null;
     }
   };
 }
@@ -2612,12 +2895,13 @@ export function formatPartnerPresenceText(
 
   const rawPlay = (presence.lagi_play_apa || '').trim();
   const isWatchingNobar = presence.lagi_ngapain === 'di Nobar';
-  const hasMusicMarker = rawPlay.startsWith('🎵 ');
+  const hasMusicMarker =
+    rawPlay.startsWith('MUSIC:') || rawPlay.startsWith('🎵 ');
   const isListeningMusic =
     !isWatchingNobar && (presence.lagi_ngapain === 'di Musik' || hasMusicMarker);
 
   if (isWatchingNobar) {
-    const nobarTitle = rawPlay.replace(/^🎬\s*/, '').trim();
+    const nobarTitle = stripDecorEmojis(rawPlay.replace(/^(?:NOBAR:|🎬)\s*/i, ''));
     return {
       online: true,
       isWatchingNobar: true,
@@ -2629,13 +2913,13 @@ export function formatPartnerPresenceText(
         ? `${partnerName} lagi nonton "${nobarTitle}"`
         : `${partnerName} lagi nonton Nobar`,
       shortLabel: nobarTitle
-        ? `Online · lagi nonton ${nobarTitle}`
-        : 'Online · lagi nonton Nobar',
+        ? `Online - lagi nonton ${nobarTitle}`
+        : 'Online - lagi nonton Nobar',
     };
   }
 
   if (isListeningMusic) {
-    const songTitle = rawPlay.replace(/^🎵\s*/, '').trim();
+    const songTitle = stripDecorEmojis(rawPlay.replace(/^(?:MUSIC:|🎵)\s*/i, ''));
     if (songTitle) {
       const extraWhere =
         presence.lagi_ngapain !== 'di Musik' &&
@@ -2650,7 +2934,7 @@ export function formatPartnerPresenceText(
         songTitle,
         lastSeenText,
         label: `${partnerName} lagi dengerin lagu "${songTitle}"${extraWhere}`,
-        shortLabel: `Online · lagi dengerin lagu ${songTitle}`,
+        shortLabel: `Online - lagi dengerin lagu ${songTitle}`,
       };
     }
     return {
@@ -3224,6 +3508,7 @@ export async function fetchUnekList(): Promise<UnekItem[]> {
       return {
         id: String(row.id ?? `unek-${idx}`),
         author: toRole(row.author, 'faiz'),
+        mood: row.mood ? stripDecorEmojis(String(row.mood)) : undefined,
         text: String(row.isi ?? row.text ?? ''),
         reply: row.reply ? String(row.reply) : undefined,
         is_anonymous: Boolean(row.is_anonymous ?? false),
@@ -3239,11 +3524,14 @@ export async function fetchUnekList(): Promise<UnekItem[]> {
 export async function addUnekItem(item: {
   author: Role;
   text: string;
+  mood?: string;
   is_anonymous?: boolean;
 }): Promise<UnekItem> {
+  const cleanMood = item.mood ? stripDecorEmojis(item.mood) : undefined;
   const newItem: UnekItem = {
     id: `unek-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
     author: item.author,
+    mood: cleanMood,
     text: item.text,
     is_anonymous: Boolean(item.is_anonymous ?? false),
     createdAt: 'baru aja',
@@ -3252,23 +3540,36 @@ export async function addUnekItem(item: {
   const sb = activeClient;
   if (sb) {
     try {
-      const { data, error } = await sb
+      const insertPayload: Record<string, unknown> = {
+        author: toDbUserName(item.author),
+        isi: item.text,
+        is_anonymous: Boolean(item.is_anonymous ?? false),
+        created_at: new Date().toISOString(),
+      };
+      if (cleanMood) {
+        insertPayload.mood = cleanMood;
+      }
+
+      let res = await sb
         .from('unek_unek_keiz')
-        .insert([
-          {
-            author: toDbUserName(item.author),
-            isi: item.text,
-            is_anonymous: Boolean(item.is_anonymous ?? false),
-            created_at: new Date().toISOString(),
-          },
-        ])
+        .insert([insertPayload])
         .select()
         .single();
-      if (error) {
-        console.log('[KEIZ Unek INSERT error]', error);
+
+      if (res.error && cleanMood && String(res.error.message || '').includes('mood')) {
+        delete insertPayload.mood;
+        res = await sb
+          .from('unek_unek_keiz')
+          .insert([insertPayload])
+          .select()
+          .single();
+      }
+
+      if (res.error) {
+        console.log('[KEIZ Unek INSERT error]', res.error);
         emitSupabaseError('Gagal kirim unek-unek ke Supabase!');
-      } else if (data && data.id !== undefined && data.id !== null) {
-        newItem.id = String(data.id);
+      } else if (res.data && res.data.id !== undefined && res.data.id !== null) {
+        newItem.id = String(res.data.id);
       }
     } catch {
       emitSupabaseError('Gagal kirim unek-unek ke Supabase!');

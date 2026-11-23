@@ -7,23 +7,18 @@ import {
   Play,
   RefreshCw,
   Send,
-  Share2,
   Volume2,
 } from 'lucide-react';
 import {
   clearNobarSync,
-  fetchChats,
   fetchNobarSync,
   isPresenceOnline,
   parseYouTubeUrl,
-  sendChatMessage,
-  subscribeChatRealtime,
   subscribeNobarChannel,
   upsertNobarSync,
 } from '../supabaseClient';
 import { soundFX } from '../sound';
 import type {
-  ChatMessage,
   CoupleProfile,
   NobarSyncState,
   PresenceState,
@@ -101,8 +96,8 @@ export const NobarView: React.FC<NobarViewProps> = ({
   const [needsUnmute, setNeedsUnmute] = useState(false);
   const [roomMembers, setRoomMembers] = useState<Role[]>([]);
 
-  // Chat Nobar Berdua
-  const [chats, setChats] = useState<ChatMessage[]>([]);
+  // Chat Nobar Berdua (lokal sementara selama di ruang Nobar, tidak masuk keiz_chat)
+  const [chats, setChats] = useState<{ id: string; sender: Role; message: string }[]>([]);
   const [chatText, setChatText] = useState('');
 
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -229,11 +224,10 @@ export const NobarView: React.FC<NobarViewProps> = ({
       if (initial) {
         applyRemoteNobarState(initial, true);
         if (joinSignal && joinSignal > 0) {
-          showToastMsg(`Gabung nobar bareng ${partnerName} 🎬`);
+          showToastMsg(`Gabung nobar bareng ${partnerName}`);
         }
       }
     });
-    fetchChats().then((list) => setChats(list.filter((c) => !c.is_deleted)));
 
     const unsubNobar = subscribeNobarChannel(
       currentUser,
@@ -263,27 +257,9 @@ export const NobarView: React.FC<NobarViewProps> = ({
       });
     }, 3000);
 
-    const unsubChat = subscribeChatRealtime(
-      (msg) => {
-        if (msg.is_deleted) return;
-        setChats((prev) => (prev.some((m) => m.id === msg.id) ? prev : [...prev, msg]));
-      },
-      (msg) => {
-        setChats((prev) =>
-          prev
-            .map((m) => (m.id === msg.id ? msg : m))
-            .filter((m) => !m.is_deleted)
-        );
-      },
-      () => {
-        fetchChats().then((list) => setChats(list.filter((c) => !c.is_deleted)));
-      }
-    );
-
     return () => {
       window.clearInterval(pollTimer);
       unsubNobar();
-      unsubChat();
     };
   }, [currentUser, joinSignal]);
 
@@ -618,7 +594,7 @@ export const NobarView: React.FC<NobarViewProps> = ({
         // ignore
       }
     }
-    showToastMsg(`Udah sinkron sama ${partnerName} 🎬`);
+    showToastMsg(`Udah sinkron sama ${partnerName}`);
   };
 
   const handleChangeLink = async () => {
@@ -634,18 +610,7 @@ export const NobarView: React.FC<NobarViewProps> = ({
     if (!nobar?.youtube_url) return;
     soundFX.playPop();
     navigator.clipboard?.writeText(nobar.youtube_url).catch(() => {});
-    showToastMsg('Link YouTube disalin, tinggal kirim ke ayang 💖');
-  };
-
-  const handleShareToChat = async () => {
-    if (!nobar?.youtube_url) return;
-    soundFX.playHeartBurst();
-    await sendChatMessage(
-      currentUser,
-      `Yuk nobar bareng! Klik link ini ya: ${nobar.youtube_url}`,
-      { type: 'nobar_link' }
-    );
-    showToastMsg(`Undangan nobar dikirim ke chat ${partnerName} 🎬`);
+    showToastMsg('Link YouTube disalin');
   };
 
   const handleFullscreen = () => {
@@ -653,12 +618,19 @@ export const NobarView: React.FC<NobarViewProps> = ({
     playerWrapperRef.current?.requestFullscreen?.().catch(() => {});
   };
 
-  const handleSendMiniChat = async (e: React.FormEvent) => {
+  const handleSendMiniChat = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!chatText.trim()) return;
+    const cleaned = chatText.trim();
+    if (!cleaned) return;
     soundFX.playPop();
-    const sent = await sendChatMessage(currentUser, chatText.trim());
-    setChats((prev) => (prev.some((m) => m.id === sent.id) ? prev : [...prev, sent]));
+    setChats((prev) => [
+      ...prev,
+      {
+        id: `nobar-local-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+        sender: currentUser,
+        message: cleaned,
+      },
+    ]);
     setChatText('');
     onBoostLove();
   };
@@ -670,7 +642,7 @@ export const NobarView: React.FC<NobarViewProps> = ({
     : partnerName;
 
   return (
-    <div className="animate-slide-in-right flex flex-col gap-4 pb-8">
+    <div className="animate-slide-in-right flex flex-col gap-4 pb-3">
       {/* Header + Partner Presence Avatar Badge */}
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2.5">
@@ -715,8 +687,8 @@ export const NobarView: React.FC<NobarViewProps> = ({
           <span className="max-w-[125px] truncate text-[10px] font-extrabold text-[#2D0A1E]">
             {partnerInNobar
               ? isPlaying
-                ? `${partnerName} nonton 🟢`
-                : `${partnerName} di Nobar ⏸`
+                ? `${partnerName} nonton`
+                : `${partnerName} di Nobar`
               : partnerOnline
               ? `${partnerName} ${partnerPresence?.lagi_ngapain || 'online'}`
               : `${partnerName} offline`}
@@ -788,10 +760,10 @@ export const NobarView: React.FC<NobarViewProps> = ({
               />
               <span className="truncate">
                 {isPlaying
-                  ? `${actorName} lagi Play • ${formatClock(currentTime)} / ${formatClock(
+                  ? `${actorName} lagi Play - ${formatClock(currentTime)} / ${formatClock(
                       duration
-                    )} • ▶ Lagi Jalan`
-                  : `⏸ ${actorName} lagi Pause • ${formatClock(currentTime)}`}
+                    )} - Lagi Jalan`
+                  : `${actorName} lagi Pause - ${formatClock(currentTime)}`}
               </span>
             </div>
             <span className="shrink-0 rounded-full bg-white px-2 py-0.5 text-[10px] text-[#E91E7A] border border-[#FFD6E7]">
@@ -905,8 +877,8 @@ export const NobarView: React.FC<NobarViewProps> = ({
               </div>
             </div>
 
-            {/* Bottom Controls: Ganti Link + Salin + Kirim ke Chat */}
-            <div className="mt-3 grid grid-cols-3 gap-2">
+            {/* Bottom Controls: Ganti Link + Salin */}
+            <div className="mt-3 grid grid-cols-2 gap-2">
               <button
                 type="button"
                 onClick={handleChangeLink}
@@ -922,14 +894,6 @@ export const NobarView: React.FC<NobarViewProps> = ({
               >
                 <Copy className="h-3.5 w-3.5" />
                 <span>Salin</span>
-              </button>
-              <button
-                type="button"
-                onClick={handleShareToChat}
-                className="btn-bucin flex min-h-[40px] items-center justify-center gap-1 rounded-full bg-[#3B82F6] text-[11px] font-extrabold text-white shadow-sm cursor-pointer"
-              >
-                <Share2 className="h-3.5 w-3.5" />
-                <span>Ke Chat</span>
               </button>
             </div>
           </div>

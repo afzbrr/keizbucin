@@ -230,7 +230,7 @@ export const GaleriView: React.FC<GaleriViewProps> = ({ currentUser, onBack }) =
   };
 
   return (
-    <div className="animate-slide-in-right flex flex-col gap-4 pb-8">
+    <div className="animate-slide-in-right flex flex-col gap-4 pb-3">
       <div className="flex items-center gap-2.5">
         <button
           type="button"
