@@ -20,6 +20,7 @@ import {
   checkSupabaseConnection,
   deleteChatMessage,
   fetchChats,
+  formatPartnerPresenceText,
   getConnectionStatus,
   markChatsAsRead,
   sendChatMessage,
@@ -222,23 +223,48 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
     setMessages((prev) => [...prev, pendingMsg]);
 
-    const sent = await sendChatMessage(currentUser, text, payloadExtra);
-    setMessages((prev) => {
+    try {
+      console.log('[ChatView] Inserting to keiz_chat table:', JSON.stringify(pendingMsg));
+      const sent = await sendChatMessage(currentUser, text, payloadExtra);
       if (sent.failed) {
-        return prev.map((m) =>
-          m.id === tempId
-            ? { ...m, sending: false, failed: true, errorDetails: sent.errorDetails }
-            : m
-        );
+        console.log('[ChatView] Insert to keiz_chat failed:', sent);
       }
-      const withoutTemp = prev.filter((m) => m.id !== tempId);
-      return withoutTemp.some((m) => m.id === sent.id)
-        ? withoutTemp
-        : [...withoutTemp, { ...sent, sending: false, failed: false }];
-    });
+      setMessages((prev) => {
+        if (sent.failed) {
+          return prev.map((m) =>
+            m.id === tempId
+              ? { ...m, sending: false, failed: true, errorDetails: sent.errorDetails }
+              : m
+          );
+        }
+        const withoutTemp = prev.filter((m) => m.id !== tempId);
+        return withoutTemp.some((m) => m.id === sent.id)
+          ? withoutTemp
+          : [...withoutTemp, { ...sent, sending: false, failed: false }];
+      });
 
-    if (!sent.failed) {
-      triggerBriefTyping();
+      if (!sent.failed) {
+        triggerBriefTyping();
+      }
+    } catch (err) {
+      console.log('[ChatView] Unexpected insert error object:', err);
+      console.log('[ChatView] Failed payload:', JSON.stringify(pendingMsg));
+      const eObj = err as {
+        message?: string;
+        details?: string;
+        hint?: string;
+        code?: string;
+      };
+      const formattedErr = `ERROR: ${eObj?.message ?? String(err)} | details: ${
+        eObj?.details ?? '-'
+      } | hint: ${eObj?.hint ?? '-'} | code: ${eObj?.code ?? 'EXCEPTION'}`;
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === tempId
+            ? { ...m, sending: false, failed: true, errorDetails: formattedErr }
+            : m
+        )
+      );
     }
   };
 
@@ -251,7 +277,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
       )
     );
 
-    const sent = await sendChatMessage(failedMsg.sender, failedMsg.message, {
+    const retryExtra: Partial<ChatMessage> = {
       type: failedMsg.type,
       image_url: failedMsg.image_url,
       voice_url: failedMsg.voice_url,
@@ -259,21 +285,47 @@ export const ChatView: React.FC<ChatViewProps> = ({
       reply_to: failedMsg.reply_to,
       reply_to_text: failedMsg.reply_to_text,
       reply_to_sender: failedMsg.reply_to_sender,
-    });
+    };
 
-    setMessages((prev) => {
+    try {
+      console.log('[ChatView] Retrying insert to keiz_chat table:', JSON.stringify(failedMsg));
+      const sent = await sendChatMessage(failedMsg.sender, failedMsg.message, retryExtra);
       if (sent.failed) {
-        return prev.map((m) =>
-          m.id === failedMsg.id
-            ? { ...m, sending: false, failed: true, errorDetails: sent.errorDetails }
-            : m
-        );
+        console.log('[ChatView] Retry insert to keiz_chat failed:', sent);
       }
-      const withoutFailed = prev.filter((m) => m.id !== failedMsg.id);
-      return withoutFailed.some((m) => m.id === sent.id)
-        ? withoutFailed
-        : [...withoutFailed, { ...sent, sending: false, failed: false }];
-    });
+      setMessages((prev) => {
+        if (sent.failed) {
+          return prev.map((m) =>
+            m.id === failedMsg.id
+              ? { ...m, sending: false, failed: true, errorDetails: sent.errorDetails }
+              : m
+          );
+        }
+        const withoutFailed = prev.filter((m) => m.id !== failedMsg.id);
+        return withoutFailed.some((m) => m.id === sent.id)
+          ? withoutFailed
+          : [...withoutFailed, { ...sent, sending: false, failed: false }];
+      });
+    } catch (err) {
+      console.log('[ChatView] Unexpected retry error object:', err);
+      console.log('[ChatView] Failed retry payload:', JSON.stringify(failedMsg));
+      const eObj = err as {
+        message?: string;
+        details?: string;
+        hint?: string;
+        code?: string;
+      };
+      const formattedErr = `ERROR: ${eObj?.message ?? String(err)} | details: ${
+        eObj?.details ?? '-'
+      } | hint: ${eObj?.hint ?? '-'} | code: ${eObj?.code ?? 'EXCEPTION'}`;
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === failedMsg.id
+            ? { ...m, sending: false, failed: true, errorDetails: formattedErr }
+            : m
+        )
+      );
+    }
   };
 
   const handleReact = async (msg: ChatMessage, emoji: string, e: React.MouseEvent) => {
@@ -338,12 +390,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
     }
   };
 
-  const partnerStatusLabel =
-    partnerPresence?.status === 'online'
-      ? `Online · ${partnerPresence.lagi_ngapain}${
-          partnerPresence.lagi_play_apa ? ` (${partnerPresence.lagi_play_apa})` : ''
-        }`
-      : `Lagi kangen ${currentUser === 'faiz' ? profile.faizName : profile.kenatName}`;
+  const partnerPresenceDisplay = formatPartnerPresenceText(
+    partnerName,
+    partnerPresence
+  );
 
   return (
     <div className="animate-slide-in-right flex flex-col gap-2.5 pb-6">
@@ -401,9 +451,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
             />
             <span
               className={`absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-white ${
-                partnerPresence?.status === 'online'
-                  ? 'bg-emerald-500'
-                  : 'bg-slate-300'
+                partnerPresenceDisplay.online ? 'bg-emerald-500' : 'bg-slate-300'
               }`}
             />
           </div>
@@ -411,8 +459,14 @@ export const ChatView: React.FC<ChatViewProps> = ({
             <p className="truncate text-[14px] font-extrabold text-[#2D0A1E]">
               {partnerName}
             </p>
-            <p className="truncate text-[11px] font-semibold text-emerald-600">
-              {partnerStatusLabel}
+            <p
+              className={`truncate text-[11px] font-semibold ${
+                partnerPresenceDisplay.online
+                  ? 'text-emerald-600'
+                  : 'text-[#8A6A7A]'
+              }`}
+            >
+              {partnerPresenceDisplay.shortLabel}
             </p>
           </div>
         </div>
@@ -448,6 +502,36 @@ export const ChatView: React.FC<ChatViewProps> = ({
           </button>
         </div>
       </div>
+
+      {/* Quick Join Nonton / Ikut Dengerin strip if partner is watching or listening */}
+      {(partnerPresenceDisplay.isWatchingNobar ||
+        partnerPresenceDisplay.isListeningMusic) && (
+        <div className="flex items-center justify-between gap-2 rounded-2xl border border-[#FFD6E7] bg-[#FFF5F9] px-3 py-2 shadow-sm">
+          <p className="truncate text-[11px] font-extrabold text-[#2D0A1E]">
+            {partnerPresenceDisplay.label}
+          </p>
+          <button
+            type="button"
+            onClick={() => {
+              soundFX.playPop();
+              onNavigate(partnerPresenceDisplay.isWatchingNobar ? 'nobar' : 'lagu');
+            }}
+            className="btn-bucin inline-flex shrink-0 items-center gap-1 rounded-full bg-gradient-to-r from-[#FF2E7E] to-[#FF7AB8] px-3 py-1 text-[10px] font-extrabold text-white shadow-sm cursor-pointer"
+          >
+            {partnerPresenceDisplay.isWatchingNobar ? (
+              <>
+                <Film className="h-3 w-3" />
+                <span>Join Nonton</span>
+              </>
+            ) : (
+              <>
+                <Music2 className="h-3 w-3" />
+                <span>Buka Musik</span>
+              </>
+            )}
+          </button>
+        </div>
+      )}
 
       {/* Collapsible VITE Supabase Config Panel inside Chat */}
       {showSupabaseConfig && (

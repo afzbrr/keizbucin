@@ -1,41 +1,68 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { ArrowLeft, Camera, ImagePlus, Trash2, X } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { ArrowLeft, Camera, ImagePlus, Loader2, Trash2, X } from 'lucide-react';
 import {
-  addPostingan,
-  deletePostingan,
-  fetchPostingan,
+  addAlbumPhoto,
+  deleteAlbumPhoto,
+  fetchAlbumPhotos,
   subscribeRealtime,
 } from '../supabaseClient';
 import { soundFX } from '../sound';
 import type { GalleryPhoto, Role } from '../types';
 
-async function compressImageFile(file: File, maxDim = 960): Promise<string> {
+async function compressImageFile(
+  file: File,
+  maxDim = 900
+): Promise<{ dataUrl: string; blob: Blob | null }> {
   const dataUrl = await new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
-    reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '');
-    reader.onerror = () => reject(new Error('Failed to read image'));
+    reader.onload = () =>
+      resolve(typeof reader.result === 'string' ? reader.result : '');
+    reader.onerror = () => reject(new Error('Gagal membaca file foto'));
     reader.readAsDataURL(file);
   });
-  if (!dataUrl || file.type === 'image/svg+xml') return dataUrl;
+  if (!dataUrl || file.type === 'image/svg+xml') {
+    return { dataUrl, blob: file };
+  }
 
-  return new Promise<string>((resolve) => {
+  return new Promise<{ dataUrl: string; blob: Blob | null }>((resolve) => {
     const img = new Image();
     img.onload = () => {
-      const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
-      const w = Math.max(1, Math.round(img.width * scale));
-      const h = Math.max(1, Math.round(img.height * scale));
-      const canvas = document.createElement('canvas');
-      canvas.width = w;
-      canvas.height = h;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) {
-        resolve(dataUrl);
-        return;
+      try {
+        const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+        const w = Math.max(1, Math.round(img.width * scale));
+        const h = Math.max(1, Math.round(img.height * scale));
+        const canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          resolve({ dataUrl, blob: file });
+          return;
+        }
+        ctx.drawImage(img, 0, 0, w, h);
+        const compressedUrl = canvas.toDataURL('image/jpeg', 0.78);
+        canvas.toBlob(
+          async (blob) => {
+            if (blob) {
+              resolve({ dataUrl: compressedUrl, blob });
+              return;
+            }
+            try {
+              const res = await fetch(compressedUrl);
+              const fallbackBlob = await res.blob();
+              resolve({ dataUrl: compressedUrl, blob: fallbackBlob });
+            } catch {
+              resolve({ dataUrl: compressedUrl, blob: file });
+            }
+          },
+          'image/jpeg',
+          0.78
+        );
+      } catch {
+        resolve({ dataUrl, blob: file });
       }
-      ctx.drawImage(img, 0, 0, w, h);
-      resolve(canvas.toDataURL('image/jpeg', 0.8));
     };
-    img.onerror = () => resolve(dataUrl);
+    img.onerror = () => resolve({ dataUrl, blob: file });
     img.src = dataUrl;
   });
 }
@@ -45,49 +72,80 @@ interface GaleriViewProps {
   onBack: () => void;
 }
 
+const ALBUM_INPUT_ID = 'keiz-album-photo-input';
+
 export const GaleriView: React.FC<GaleriViewProps> = ({ currentUser, onBack }) => {
   const [photos, setPhotos] = useState<GalleryPhoto[]>([]);
   const [selected, setSelected] = useState<GalleryPhoto | null>(null);
   const [captionInput, setCaptionInput] = useState('');
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
   const [failedIds, setFailedIds] = useState<Record<string, boolean>>({});
-  const fileRef = useRef<HTMLInputElement | null>(null);
 
   const loadPosts = async () => {
-    const data = await fetchPostingan();
+    const data = await fetchAlbumPhotos();
     setPhotos(data);
   };
 
   useEffect(() => {
-    loadPosts();
+    void loadPosts();
     const unsub = subscribeRealtime({
-      onPostingan: () => loadPosts(),
+      onAlbum: () => {
+        void loadPosts();
+      },
     });
-    return unsub;
+    const poll = window.setInterval(() => {
+      void loadPosts();
+    }, 3000);
+    return () => {
+      unsub();
+      window.clearInterval(poll);
+    };
   }, []);
 
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
+    const fileList = e.target.files ? Array.from(e.target.files) : [];
     e.target.value = '';
-    if (!file) return;
-    const compressed = await compressImageFile(file, 960);
-    if (!compressed) return;
-    soundFX.playHeartBurst();
-    const saved = await addPostingan({
-      author: currentUser,
-      caption: captionInput.trim() || 'momen gemes kita berdua 💖',
-      image_url: compressed,
-    });
-    if (saved) {
-      setPhotos((prev) => [saved, ...prev.filter((p) => p.id !== saved.id)]);
+    if (fileList.length === 0) return;
+
+    setUploading(true);
+    setUploadError(null);
+    const captionToUse = captionInput.trim() || 'momen gemes kita berdua 💖';
+
+    try {
+      for (const file of fileList) {
+        const compressed = await compressImageFile(file, 900);
+        if (!compressed.dataUrl) continue;
+        const saved = await addAlbumPhoto({
+          author: currentUser,
+          caption: captionToUse,
+          file: compressed.blob,
+          fallbackDataUrl: compressed.dataUrl,
+        });
+        if (saved.failed) {
+          setUploadError(
+            saved.errorDetails || 'Gagal upload foto ke keiz_album, coba lagi ya.'
+          );
+        } else {
+          soundFX.playHeartBurst();
+          setPhotos((prev) => [saved, ...prev.filter((p) => p.id !== saved.id)]);
+        }
+      }
+      setCaptionInput('');
+    } catch (err) {
+      setUploadError(
+        err instanceof Error ? err.message : 'Gagal membaca/upload foto.'
+      );
+    } finally {
+      setUploading(false);
     }
-    setCaptionInput('');
   };
 
-  const handleDelete = async (id: string) => {
+  const handleDelete = async (photo: GalleryPhoto) => {
     soundFX.playClick();
     setSelected(null);
-    setPhotos((prev) => prev.filter((p) => p.id !== id));
-    await deletePostingan(id);
+    setPhotos((prev) => prev.filter((p) => p.id !== photo.id));
+    await deleteAlbumPhoto(photo.id, photo.url);
   };
 
   return (
@@ -111,6 +169,17 @@ export const GaleriView: React.FC<GaleriViewProps> = ({ currentUser, onBack }) =
         </div>
       </div>
 
+      {/* Hidden Accessible File Input (sr-only so native <label> works on all mobile browsers & PWA) */}
+      <input
+        id={ALBUM_INPUT_ID}
+        type="file"
+        accept="image/*"
+        multiple
+        disabled={uploading}
+        onChange={handleUpload}
+        className="sr-only"
+      />
+
       {/* Add Photo Bar */}
       <div className="keiz-sticker-card bg-white p-3.5">
         <div className="flex items-center gap-2">
@@ -121,25 +190,40 @@ export const GaleriView: React.FC<GaleriViewProps> = ({ currentUser, onBack }) =
             placeholder="tulis caption lucu dulu sebelum upload..."
             className="min-h-[42px] flex-1 rounded-full border border-[#FFD6E7] bg-[#FFF2F7] px-3.5 text-xs font-medium text-[#2D0A1E] placeholder-[#9A7A8A] focus:outline-none"
           />
-          <button
-            type="button"
-            onClick={() => {
-              soundFX.playClick();
-              fileRef.current?.click();
-            }}
-            className="btn-bucin flex min-h-[42px] shrink-0 items-center gap-1.5 rounded-full bg-gradient-to-r from-[#FF2E7E] to-[#FF7AB8] px-4 text-xs font-extrabold text-white shadow-sm cursor-pointer"
+          <label
+            htmlFor={ALBUM_INPUT_ID}
+            onClick={() => soundFX.playClick()}
+            className={`btn-bucin flex min-h-[42px] shrink-0 items-center gap-1.5 rounded-full bg-gradient-to-r from-[#FF2E7E] to-[#FF7AB8] px-4 text-xs font-extrabold text-white shadow-sm cursor-pointer select-none ${
+              uploading ? 'pointer-events-none opacity-75' : ''
+            }`}
           >
-            <ImagePlus className="h-4 w-4" />
-            <span>Tambah</span>
-          </button>
-          <input
-            ref={fileRef}
-            type="file"
-            accept="image/*"
-            onChange={handleUpload}
-            className="hidden"
-          />
+            {uploading ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin" />
+                <span>Upload...</span>
+              </>
+            ) : (
+              <>
+                <ImagePlus className="h-4 w-4" />
+                <span>Tambah</span>
+              </>
+            )}
+          </label>
         </div>
+
+        {uploadError && (
+          <div className="mt-2.5 flex items-center justify-between gap-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-[11px] font-bold text-rose-700">
+            <span className="break-all">{uploadError}</span>
+            <button
+              type="button"
+              onClick={() => setUploadError(null)}
+              className="shrink-0 text-rose-500 cursor-pointer"
+              aria-label="Tutup error upload"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Empty State or 2-Col Polaroid Grid */}
@@ -151,16 +235,15 @@ export const GaleriView: React.FC<GaleriViewProps> = ({ currentUser, onBack }) =
           <p className="mt-3 text-xs font-extrabold text-[#5C3A49]">
             Belum ada foto kita, yuk upload foto pertama
           </p>
-          <button
-            type="button"
-            onClick={() => {
-              soundFX.playPop();
-              fileRef.current?.click();
-            }}
-            className="keiz-btn-primary btn-bucin mt-3 min-h-[44px] px-6 text-xs cursor-pointer"
+          <label
+            htmlFor={ALBUM_INPUT_ID}
+            onClick={() => soundFX.playPop()}
+            className={`keiz-btn-primary btn-bucin mt-3 inline-flex min-h-[44px] items-center justify-center px-6 text-xs cursor-pointer select-none ${
+              uploading ? 'pointer-events-none opacity-75' : ''
+            }`}
           >
-            Upload Foto Pertama
-          </button>
+            {uploading ? 'Mengupload foto...' : 'Upload Foto Pertama'}
+          </label>
         </div>
       ) : (
         <div className="grid grid-cols-2 gap-3.5 pt-1">
@@ -247,7 +330,7 @@ export const GaleriView: React.FC<GaleriViewProps> = ({ currentUser, onBack }) =
               </div>
               <button
                 type="button"
-                onClick={() => handleDelete(selected.id)}
+                onClick={() => handleDelete(selected)}
                 aria-label="Hapus foto"
                 className="flex h-9 w-9 items-center justify-center rounded-full bg-rose-50 text-rose-600 cursor-pointer"
               >

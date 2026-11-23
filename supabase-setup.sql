@@ -17,7 +17,7 @@ create table if not exists public.users_keiz (
 );
 
 -- 2. Tabel Chat Real-Time
-create table if not exists public.chat_keiz (
+create table if not exists public.keiz_chat (
   id uuid primary key default gen_random_uuid(),
   sender text not null,
   receiver text not null,
@@ -36,7 +36,7 @@ create table if not exists public.chat_keiz (
 );
 
 -- 3. Tabel Nobar Sync (1 row id=1 untuk pasangan)
-create table if not exists public.nobar_sync (
+create table if not exists public.keiz_nobar_sync (
   id int primary key default 1,
   youtube_url text default '',
   "videoId" text default '',
@@ -50,7 +50,7 @@ create table if not exists public.nobar_sync (
 );
 
 -- 4. Tabel Music Sync (1 row id=1 untuk pasangan)
-create table if not exists public.music_sync (
+create table if not exists public.keiz_music_sync (
   id int primary key default 1,
   youtube_url text default '',
   "videoId" text default '',
@@ -86,7 +86,7 @@ create table if not exists public.call_keiz (
   created_at timestamptz default now()
 );
 
--- 7. Tabel Postingan / Album Polaroid
+-- 7. Tabel Postingan Profil
 create table if not exists public.postingan_keiz (
   id text primary key,
   author text not null,
@@ -95,7 +95,17 @@ create table if not exists public.postingan_keiz (
   created_at timestamptz default now()
 );
 
--- 8. Tabel Unek-Unek
+-- 8. Tabel Album Polaroid (+ bucket 'keiz-album')
+create table if not exists public.keiz_album (
+  id text primary key,
+  author text not null,
+  caption text default '',
+  image_url text not null,
+  storage_path text default '',
+  created_at timestamptz default now()
+);
+
+-- 9. Tabel Unek-Unek
 create table if not exists public.unek_unek_keiz (
   id text primary key,
   author text not null,
@@ -106,7 +116,7 @@ create table if not exists public.unek_unek_keiz (
   created_at timestamptz default now()
 );
 
--- 9. Tabel Antrean Lagu
+-- 10. Tabel Antrean Lagu
 create table if not exists public.lagu_keiz (
   id text primary key,
   judul text,
@@ -124,9 +134,10 @@ create table if not exists public.lagu_keiz (
 -- ENABLE RLS + POLICY ALLOW ALL (RUANG PRIVAT FAIZ & KENAT)
 -- ============================================================
 alter table public.users_keiz enable row level security;
-alter table public.chat_keiz enable row level security;
-alter table public.nobar_sync enable row level security;
-alter table public.music_sync enable row level security;
+alter table public.keiz_chat enable row level security;
+alter table public.keiz_nobar_sync enable row level security;
+alter table public.keiz_music_sync enable row level security;
+alter table public.keiz_album enable row level security;
 alter table public.presence_keiz enable row level security;
 alter table public.call_keiz enable row level security;
 alter table public.postingan_keiz enable row level security;
@@ -136,14 +147,17 @@ alter table public.lagu_keiz enable row level security;
 drop policy if exists "allow_all_users_keiz" on public.users_keiz;
 create policy "allow_all_users_keiz" on public.users_keiz for all using (true) with check (true);
 
-drop policy if exists "allow_all_chat_keiz" on public.chat_keiz;
-create policy "allow_all_chat_keiz" on public.chat_keiz for all using (true) with check (true);
+drop policy if exists "allow_all_keiz_chat" on public.keiz_chat;
+create policy "allow_all_keiz_chat" on public.keiz_chat for all using (true) with check (true);
 
-drop policy if exists "allow_all_nobar_sync" on public.nobar_sync;
-create policy "allow_all_nobar_sync" on public.nobar_sync for all using (true) with check (true);
+drop policy if exists "allow_all_keiz_nobar_sync" on public.keiz_nobar_sync;
+create policy "allow_all_keiz_nobar_sync" on public.keiz_nobar_sync for all using (true) with check (true);
 
-drop policy if exists "allow_all_music_sync" on public.music_sync;
-create policy "allow_all_music_sync" on public.music_sync for all using (true) with check (true);
+drop policy if exists "allow_all_keiz_music_sync" on public.keiz_music_sync;
+create policy "allow_all_keiz_music_sync" on public.keiz_music_sync for all using (true) with check (true);
+
+drop policy if exists "allow_all_keiz_album" on public.keiz_album;
+create policy "allow_all_keiz_album" on public.keiz_album for all using (true) with check (true);
 
 drop policy if exists "allow_all_presence_keiz" on public.presence_keiz;
 create policy "allow_all_presence_keiz" on public.presence_keiz for all using (true) with check (true);
@@ -160,6 +174,15 @@ create policy "allow_all_unek_unek_keiz" on public.unek_unek_keiz for all using 
 drop policy if exists "allow_all_lagu_keiz" on public.lagu_keiz;
 create policy "allow_all_lagu_keiz" on public.lagu_keiz for all using (true) with check (true);
 
+-- Storage Bucket 'keiz-album'
+insert into storage.buckets (id, name, public)
+values ('keiz-album', 'keiz-album', true)
+on conflict (id) do nothing;
+
+drop policy if exists "allow_all_keiz_album_bucket" on storage.objects;
+create policy "allow_all_keiz_album_bucket" on storage.objects
+for all using (bucket_id = 'keiz-album') with check (bucket_id = 'keiz-album');
+
 -- ============================================================
 -- DATA AWAL WAJIB: 2 USER (FAIZ & KENAT) + ROW SYNC KOSONG
 -- ============================================================
@@ -169,11 +192,11 @@ values
   ('kenat', 'kenat', 'kenatgemaz07180528', 'Kenat', '/src/assets/images/avatar_kenat_1795263046413.jpg', '', 'pacarnya faiz, cantik sedunia no debat', '')
 on conflict (id) do nothing;
 
-insert into public.nobar_sync (id, youtube_url, "videoId", title, is_playing, "current_time", playback_rate, updated_by, action)
+insert into public.keiz_nobar_sync (id, youtube_url, "videoId", title, is_playing, "current_time", playback_rate, updated_by, action)
 values (1, '', '', '', false, 0, 1, 'Faiz', 'change_video')
 on conflict (id) do nothing;
 
-insert into public.music_sync (id, youtube_url, "videoId", title, artist, thumbnail, duration_ms, is_playing, "current_time", updated_by, action)
+insert into public.keiz_music_sync (id, youtube_url, "videoId", title, artist, thumbnail, duration_ms, is_playing, "current_time", updated_by, action)
 values (1, '', '', '', '', '', 213000, false, 0, 'Faiz', 'change_song')
 on conflict (id) do nothing;
 
@@ -186,9 +209,10 @@ declare
 begin
   foreach t in array array[
     'users_keiz',
-    'chat_keiz',
-    'nobar_sync',
-    'music_sync',
+    'keiz_chat',
+    'keiz_nobar_sync',
+    'keiz_music_sync',
+    'keiz_album',
     'presence_keiz',
     'call_keiz',
     'postingan_keiz',

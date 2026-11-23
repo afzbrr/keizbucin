@@ -38,8 +38,10 @@ import {
   checkSupabaseConnection,
   ensureInitialSyncRows,
   fetchProfile,
+  formatPartnerPresenceText,
   getSavedSession,
   isSupabaseConfigured,
+  markPresenceOfflineFast,
   onSupabaseError,
   onSupabaseReconfigured,
   setSavedSession,
@@ -145,6 +147,8 @@ export default function App() {
   });
   const [presenceToast, setPresenceToast] = useState<string | null>(null);
   const [activeNobarTitle, setActiveNobarTitle] = useState('');
+  const [presenceClock, setPresenceClock] = useState(() => Date.now());
+  const [nobarJoinSignal, setNobarJoinSignal] = useState(0);
   const prevPartnerActivityRef = useRef<string>('');
 
   // Avatar jump & speech bubbles
@@ -220,39 +224,55 @@ export default function App() {
     partnerRole === 'kenat' ? profile.kenatName : profile.faizName;
   const partnerPresence = presenceMap[partnerRole] ?? null;
 
+  // Tick clock every 10s so relative last-seen text updates live
+  useEffect(() => {
+    const id = window.setInterval(() => setPresenceClock(Date.now()), 10_000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  // Clear stale nobar title once user leaves Nobar
+  useEffect(() => {
+    if (section !== 'nobar' && activeNobarTitle) {
+      setActiveNobarTitle('');
+    }
+  }, [section, activeNobarTitle]);
+
   // Subscribe to real-time couple presence
   useEffect(() => {
     if (!currentUser || !supabaseReady) return;
     const unsub = subscribePresence(currentUser, (map) => {
       setPresenceMap(map);
       const partner = map[partnerRole];
-      if (partner && partner.status === 'online') {
+      const disp = formatPartnerPresenceText(partnerName, partner);
+      if (disp.online && partner) {
         const key = `${partner.lagi_ngapain}|${partner.lagi_play_apa}`;
         if (
           prevPartnerActivityRef.current &&
           prevPartnerActivityRef.current !== key
         ) {
-          const desc = partner.lagi_play_apa
-            ? `${partnerName} ${partner.lagi_ngapain} (${partner.lagi_play_apa})`
-            : `${partnerName} pindah ${partner.lagi_ngapain}`;
-          setPresenceToast(desc);
-          window.setTimeout(() => setPresenceToast(null), 2600);
+          setPresenceToast(disp.label);
+          window.setTimeout(() => setPresenceToast(null), 3200);
         }
         prevPartnerActivityRef.current = key;
+      } else {
+        prevPartnerActivityRef.current = '';
       }
     });
     return unsub;
-  }, [currentUser, partnerRole, partnerName]);
+  }, [currentUser, supabaseReady, partnerRole, partnerName]);
 
-  // Broadcast own live activity into presence_keiz & Supabase Presence
-  useEffect(() => {
+  // Broadcast own live activity into presence_keiz & Supabase Presence + 12s heartbeat
+  const broadcastOnlinePresence = useCallback(() => {
     if (!currentUser) return;
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+      return;
+    }
     const activity = sectionToActivity(section, inCall || callModalOpen);
     const playApa =
-      section === 'nobar' && activeNobarTitle
-        ? activeNobarTitle
+      section === 'nobar'
+        ? activeNobarTitle || 'Video YouTube'
         : music.isPlaying && music.activeSong
-        ? `${music.activeSong.title}`
+        ? `🎵 ${music.activeSong.title}`
         : '';
 
     upsertPresence({
@@ -272,21 +292,35 @@ export default function App() {
     music.activeSong,
   ]);
 
-  // Mark offline when tab closes
   useEffect(() => {
     if (!currentUser) return;
-    const handleUnload = () => {
-      upsertPresence({
-        user: currentUser,
-        status: 'offline',
-        lagi_ngapain: 'di Home',
-        lagi_play_apa: '',
-        last_seen: new Date().toISOString(),
-      });
+    broadcastOnlinePresence();
+    const hb = window.setInterval(broadcastOnlinePresence, 12_000);
+    return () => window.clearInterval(hb);
+  }, [currentUser, broadcastOnlinePresence]);
+
+  // Mark offline accurately when tab goes hidden / closed, and online when returning (do NOT touch music audio)
+  useEffect(() => {
+    if (!currentUser) return;
+    const handleVisibility = () => {
+      if (document.visibilityState === 'hidden') {
+        markPresenceOfflineFast(currentUser);
+      } else if (document.visibilityState === 'visible') {
+        broadcastOnlinePresence();
+      }
     };
+    const handleUnload = () => {
+      markPresenceOfflineFast(currentUser);
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+    window.addEventListener('pagehide', handleUnload);
     window.addEventListener('beforeunload', handleUnload);
-    return () => window.removeEventListener('beforeunload', handleUnload);
-  }, [currentUser]);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibility);
+      window.removeEventListener('pagehide', handleUnload);
+      window.removeEventListener('beforeunload', handleUnload);
+    };
+  }, [currentUser, broadcastOnlinePresence]);
 
   const handleSetUser = (role: Role) => {
     setCurrentUser(role);
@@ -453,6 +487,9 @@ export default function App() {
 
   const openSection = (target: AppSection) => {
     soundFX.playPop();
+    if (target === 'nobar' && partnerPresenceDisplay.isWatchingNobar) {
+      setNobarJoinSignal(Date.now());
+    }
     setSection(target);
     const nextPath = pathFromSection(target);
     if (window.location.pathname !== nextPath) {
@@ -478,26 +515,16 @@ export default function App() {
 
   const isFaiz = currentUser === 'faiz';
 
-  const partnerPresenceSummary = (() => {
-    if (!partnerPresence || partnerPresence.status !== 'online') {
-      return `${partnerName} lagi offline`;
-    }
-    if (partnerPresence.lagi_ngapain === 'di Nobar') {
-      return `${partnerName} lagi di Nobar${
-        partnerPresence.lagi_play_apa
-          ? ` - Nonton ${partnerPresence.lagi_play_apa}`
-          : ''
-      }`;
-    }
-    if (partnerPresence.lagi_ngapain === 'di Musik') {
-      return `${partnerName} lagi dengerin Musik${
-        partnerPresence.lagi_play_apa
-          ? ` - ${partnerPresence.lagi_play_apa}`
-          : ''
-      }`;
-    }
-    return `${partnerName} lagi ${partnerPresence.lagi_ngapain}`;
-  })();
+  const partnerPresenceDisplay = formatPartnerPresenceText(
+    partnerName,
+    partnerPresence,
+    presenceClock
+  );
+
+  const handleJoinPartnerNobar = () => {
+    setNobarJoinSignal(Date.now());
+    openSection('nobar');
+  };
 
   return (
     <div className="paper-texture relative min-h-screen w-full overflow-x-hidden bg-gradient-to-b from-[#FFF2F7] to-[#FFE4EF] text-[#2D0A1E]">
@@ -578,8 +605,20 @@ export default function App() {
 
       {/* Live Partner Activity Transition Toast */}
       {currentUser && presenceToast && (!supabaseToast || errorBannerDismissed) && (
-        <div className="animate-bubble-pop fixed left-1/2 top-14 z-40 -translate-x-1/2 rounded-full border border-[#FFD6E7] bg-white/95 px-4 py-1.5 text-[11px] font-extrabold text-[#D81B6E] shadow-lg backdrop-blur-md">
-          {presenceToast}
+        <div className="animate-bubble-pop fixed left-1/2 top-14 z-40 flex max-w-[92vw] -translate-x-1/2 items-center gap-2 rounded-full border border-[#FFD6E7] bg-white/95 px-4 py-1.5 text-[11px] font-extrabold text-[#D81B6E] shadow-lg backdrop-blur-md">
+          <span className="truncate">{presenceToast}</span>
+          {partnerPresenceDisplay.isWatchingNobar && section !== 'nobar' && (
+            <button
+              type="button"
+              onClick={() => {
+                setPresenceToast(null);
+                handleJoinPartnerNobar();
+              }}
+              className="btn-bucin shrink-0 rounded-full bg-[#FF2E7E] px-2.5 py-0.5 text-[10px] font-extrabold text-white cursor-pointer"
+            >
+              Join Nonton
+            </button>
+          )}
         </div>
       )}
 
@@ -817,17 +856,40 @@ export default function App() {
                 </div>
 
                 {/* Live Partner Activity Banner right under [ Profil | Call Berdua ] */}
-                <div className="mt-2.5 flex items-center gap-2 rounded-full border border-[#FFD6E7] bg-white/95 px-3.5 py-2 shadow-sm">
-                  <span
-                    className={`h-2.5 w-2.5 shrink-0 rounded-full ${
-                      partnerPresence?.status === 'online'
-                        ? 'bg-emerald-500 animate-pulse'
-                        : 'bg-slate-300'
-                    }`}
-                  />
-                  <p className="truncate text-[11px] font-extrabold text-[#2D0A1E]">
-                    {partnerPresenceSummary}
-                  </p>
+                <div className="mt-2.5 flex items-center justify-between gap-2 rounded-full border border-[#FFD6E7] bg-white/95 px-3.5 py-2 shadow-sm">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <span
+                      className={`h-2.5 w-2.5 shrink-0 rounded-full ${
+                        partnerPresenceDisplay.online
+                          ? 'bg-emerald-500 animate-pulse'
+                          : 'bg-slate-300'
+                      }`}
+                    />
+                    <p className="truncate text-[11px] font-extrabold text-[#2D0A1E]">
+                      {partnerPresenceDisplay.label}
+                    </p>
+                  </div>
+                  {partnerPresenceDisplay.isWatchingNobar && (
+                    <button
+                      type="button"
+                      onClick={handleJoinPartnerNobar}
+                      className="btn-bucin inline-flex shrink-0 items-center gap-1 rounded-full bg-gradient-to-r from-[#FF2E7E] to-[#FF7AB8] px-3 py-1 text-[10px] font-extrabold text-white shadow-sm cursor-pointer"
+                    >
+                      <Film className="h-3 w-3" />
+                      <span>Join Nonton</span>
+                    </button>
+                  )}
+                  {!partnerPresenceDisplay.isWatchingNobar &&
+                    partnerPresenceDisplay.isListeningMusic && (
+                      <button
+                        type="button"
+                        onClick={() => openSection('lagu')}
+                        className="btn-bucin inline-flex shrink-0 items-center gap-1 rounded-full bg-[#F3F0FF] border border-[#DDD6FE] px-2.5 py-1 text-[10px] font-extrabold text-[#6D28D9] cursor-pointer"
+                      >
+                        <Music2 className="h-3 w-3" />
+                        <span>Ikut Dengerin</span>
+                      </button>
+                    )}
                 </div>
               </div>
 
@@ -858,9 +920,18 @@ export default function App() {
 
                   <button
                     type="button"
-                    onClick={() => openSection('nobar')}
+                    onClick={
+                      partnerPresenceDisplay.isWatchingNobar
+                        ? handleJoinPartnerNobar
+                        : () => openSection('nobar')
+                    }
                     className="keiz-sticker-card menu-card-bucin relative flex h-[112px] rotate-[0.9deg] flex-col justify-between bg-[#FFF7E6] p-[14px] text-left cursor-pointer"
                   >
+                    {partnerPresenceDisplay.isWatchingNobar && (
+                      <span className="absolute -right-1.5 -top-2 rotate-3 rounded-full bg-[#FF2E7E] px-2 py-0.5 text-[9px] font-extrabold text-white shadow">
+                        JOIN LIVE
+                      </span>
+                    )}
                     <div className="flex items-start justify-between">
                       <Sticker3D kind="nobar" className="menu-icon h-10 w-10" />
                       <ChevronRight className="h-4 w-4 text-[#D81B6E]" />
@@ -870,7 +941,9 @@ export default function App() {
                         Nobar
                       </p>
                       <p className="text-[12px] font-semibold leading-tight text-[#8A6A7A]">
-                        Putar film favoritmu
+                        {partnerPresenceDisplay.isWatchingNobar
+                          ? `${partnerName} lagi nonton!`
+                          : 'Putar film favoritmu'}
                       </p>
                     </div>
                   </button>
@@ -974,6 +1047,7 @@ export default function App() {
                   currentUser={currentUser}
                   profile={profile}
                   partnerPresence={partnerPresence}
+                  joinSignal={nobarJoinSignal}
                   onActiveTitleChange={setActiveNobarTitle}
                   onBack={() => openSection('home')}
                   onBoostLove={() => {}}

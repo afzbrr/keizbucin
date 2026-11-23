@@ -184,6 +184,8 @@ export interface GalleryPhoto {
   dateLabel: string;
   tag: 'faiz' | 'kenat' | 'berdua';
   created_at?: string;
+  failed?: boolean;
+  errorDetails?: string;
 }
 
 export interface UnekItem {

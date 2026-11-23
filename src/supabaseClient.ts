@@ -208,6 +208,8 @@ export function saveSupabaseConfig(url: string, anonKey: string): boolean {
   }
   inFlightCheck = null;
   resetChatSchemaCache();
+  cachedPostinganSchema = null;
+  cachedAlbumSchema = null;
   const client = initSupabaseClient();
   reconfigListeners.forEach((fn) => fn());
   return client !== null;
@@ -222,6 +224,8 @@ export function clearSupabaseConfig(): void {
   }
   inFlightCheck = null;
   resetChatSchemaCache();
+  cachedPostinganSchema = null;
+  cachedAlbumSchema = null;
   initSupabaseClient();
   reconfigListeners.forEach((fn) => fn());
 }
@@ -378,12 +382,12 @@ export async function ensureInitialSyncRows(): Promise<boolean> {
     if (!conn.ok) return false;
 
     const [nobarRes, musicRes] = await Promise.all([
-      sb.from('nobar_sync').select('id').eq('id', 1).maybeSingle(),
-      sb.from('music_sync').select('id').eq('id', 1).maybeSingle(),
+      sb.from('keiz_nobar_sync').select('id').eq('id', 1).maybeSingle(),
+      sb.from('keiz_music_sync').select('id').eq('id', 1).maybeSingle(),
     ]);
 
     if (!nobarRes.error && !nobarRes.data) {
-      await sb.from('nobar_sync').upsert([
+      await sb.from('keiz_nobar_sync').upsert([
         {
           id: 1,
           youtube_url: '',
@@ -399,7 +403,7 @@ export async function ensureInitialSyncRows(): Promise<boolean> {
     }
 
     if (!musicRes.error && !musicRes.data) {
-      await sb.from('music_sync').upsert([
+      await sb.from('keiz_music_sync').upsert([
         {
           id: 1,
           youtube_url: '',
@@ -435,7 +439,7 @@ create table if not exists public.users_keiz (
   created_at timestamptz default now()
 );
 
-create table if not exists public.chat (
+create table if not exists public.keiz_chat (
   id uuid primary key default gen_random_uuid(),
   sender text not null,
   receiver text not null,
@@ -453,7 +457,7 @@ create table if not exists public.chat (
   react text
 );
 
-create table if not exists public.nobar_sync (
+create table if not exists public.keiz_nobar_sync (
   id int primary key default 1,
   youtube_url text default '',
   "videoId" text default '',
@@ -466,7 +470,7 @@ create table if not exists public.nobar_sync (
   action text default 'change_video'
 );
 
-create table if not exists public.music_sync (
+create table if not exists public.keiz_music_sync (
   id int primary key default 1,
   youtube_url text default '',
   "videoId" text default '',
@@ -479,6 +483,15 @@ create table if not exists public.music_sync (
   updated_by text default 'Faiz',
   updated_at timestamptz default now(),
   action text default 'change_song'
+);
+
+create table if not exists public.keiz_album (
+  id text primary key,
+  author text not null,
+  caption text default '',
+  image_url text not null,
+  storage_path text default '',
+  created_at timestamptz default now()
 );
 
 create table if not exists public.presence_keiz (
@@ -532,9 +545,10 @@ create table if not exists public.lagu_keiz (
 );
 
 alter table public.users_keiz enable row level security;
-alter table public.chat enable row level security;
-alter table public.nobar_sync enable row level security;
-alter table public.music_sync enable row level security;
+alter table public.keiz_chat enable row level security;
+alter table public.keiz_nobar_sync enable row level security;
+alter table public.keiz_music_sync enable row level security;
+alter table public.keiz_album enable row level security;
 alter table public.presence_keiz enable row level security;
 alter table public.call_keiz enable row level security;
 alter table public.postingan_keiz enable row level security;
@@ -542,14 +556,22 @@ alter table public.unek_unek_keiz enable row level security;
 alter table public.lagu_keiz enable row level security;
 
 create policy "allow_all_users_keiz" on public.users_keiz for all using (true) with check (true);
-create policy "allow_all_chat" on public.chat for all using (true) with check (true);
-create policy "allow_all_nobar_sync" on public.nobar_sync for all using (true) with check (true);
-create policy "allow_all_music_sync" on public.music_sync for all using (true) with check (true);
+create policy "allow_all_keiz_chat" on public.keiz_chat for all using (true) with check (true);
+create policy "allow_all_keiz_nobar_sync" on public.keiz_nobar_sync for all using (true) with check (true);
+create policy "allow_all_keiz_music_sync" on public.keiz_music_sync for all using (true) with check (true);
+create policy "allow_all_keiz_album" on public.keiz_album for all using (true) with check (true);
 create policy "allow_all_presence_keiz" on public.presence_keiz for all using (true) with check (true);
 create policy "allow_all_call_keiz" on public.call_keiz for all using (true) with check (true);
 create policy "allow_all_postingan_keiz" on public.postingan_keiz for all using (true) with check (true);
 create policy "allow_all_unek_unek_keiz" on public.unek_unek_keiz for all using (true) with check (true);
 create policy "allow_all_lagu_keiz" on public.lagu_keiz for all using (true) with check (true);
+
+insert into storage.buckets (id, name, public)
+values ('keiz-album', 'keiz-album', true)
+on conflict (id) do nothing;
+
+create policy "allow_all_keiz_album_bucket" on storage.objects
+for all using (bucket_id = 'keiz-album') with check (bucket_id = 'keiz-album');
 
 insert into public.users_keiz (id, username, password_hash, nama, foto_profil, foto_latar, bio, lagu_profil)
 values
@@ -557,15 +579,15 @@ values
   ('kenat', 'kenat', 'kenatgemaz07180528', 'Kenat', '/src/assets/images/avatar_kenat_1795263046413.jpg', '', 'pacarnya faiz, cantik sedunia no debat', '')
 on conflict (id) do nothing;
 
-insert into public.nobar_sync (id, youtube_url, "videoId", title, is_playing, "current_time", playback_rate, updated_by, action)
+insert into public.keiz_nobar_sync (id, youtube_url, "videoId", title, is_playing, "current_time", playback_rate, updated_by, action)
 values (1, '', '', '', false, 0, 1, 'Faiz', 'change_video')
 on conflict (id) do nothing;
 
-insert into public.music_sync (id, youtube_url, "videoId", title, artist, thumbnail, duration_ms, is_playing, "current_time", updated_by, action)
+insert into public.keiz_music_sync (id, youtube_url, "videoId", title, artist, thumbnail, duration_ms, is_playing, "current_time", updated_by, action)
 values (1, '', '', '', '', '', 213000, false, 0, 'Faiz', 'change_song')
 on conflict (id) do nothing;
 
-alter publication supabase_realtime add table public.users_keiz, public.chat, public.nobar_sync, public.music_sync, public.presence_keiz, public.call_keiz, public.postingan_keiz, public.unek_unek_keiz, public.lagu_keiz;`;
+alter publication supabase_realtime add table public.users_keiz, public.keiz_chat, public.keiz_nobar_sync, public.keiz_music_sync, public.keiz_album, public.presence_keiz, public.call_keiz, public.postingan_keiz, public.unek_unek_keiz, public.lagu_keiz;`;
 
 const localChannel =
   typeof BroadcastChannel !== 'undefined'
@@ -810,8 +832,105 @@ export async function saveProfile(
 }
 
 // ---------- POSTINGAN / ALBUM POLAROID (tabel: postingan_keiz) ----------
+interface PostinganSchema {
+  tableName: string;
+  columns: Set<string>;
+  authorCol: string;
+  captionCol: string;
+  imageCol: string;
+  idIsInt: boolean;
+  idIsUuid: boolean;
+}
+
+let cachedPostinganSchema: PostinganSchema | null = null;
+
+async function discoverPostinganSchema(sb: SupabaseClient): Promise<PostinganSchema | null> {
+  if (cachedPostinganSchema) return cachedPostinganSchema;
+
+  const candidates = ['postingan_keiz'];
+  const { url, anonKey } = getSupabaseConfig();
+  let specDefs: Record<string, { properties?: Record<string, { type?: string; format?: string }> }> = {};
+
+  if (url && anonKey) {
+    try {
+      const controller = new AbortController();
+      const timer = window.setTimeout(() => controller.abort(), 5000);
+      const res = await fetch(`${url.replace(/\/+$/, '')}/rest/v1/`, {
+        headers: {
+          apikey: anonKey,
+          Authorization: `Bearer ${anonKey}`,
+          Accept: 'application/openapi+json, application/json',
+        },
+        signal: controller.signal,
+      });
+      window.clearTimeout(timer);
+      if (res.ok) {
+        const spec = (await res.json()) as {
+          definitions?: Record<string, { properties?: Record<string, { type?: string; format?: string }> }>;
+          components?: { schemas?: Record<string, { properties?: Record<string, { type?: string; format?: string }> }> };
+        };
+        specDefs = spec?.definitions ?? spec?.components?.schemas ?? {};
+      }
+    } catch {
+      // fallback below
+    }
+  }
+
+  let tableName = 'postingan_keiz';
+  for (const name of candidates) {
+    if (specDefs[name]?.properties) {
+      tableName = name;
+      break;
+    }
+  }
+
+  const columns = new Set<string>();
+  const propMeta = specDefs[tableName]?.properties || {};
+  Object.keys(propMeta).forEach((c) => columns.add(c));
+
+  if (columns.size === 0) {
+    for (const name of candidates) {
+      try {
+        const { data, error } = await sb.from(name).select('*').limit(1);
+        if (!error) {
+          tableName = name;
+          if (Array.isArray(data) && data.length > 0) {
+            Object.keys(data[0] as Record<string, unknown>).forEach((k) => columns.add(k));
+          }
+          break;
+        }
+      } catch {
+        // try next
+      }
+    }
+  }
+
+  if (columns.size === 0) return null;
+
+  const pick = (opts: string[], fallback: string) =>
+    opts.find((c) => columns.has(c)) ?? fallback;
+
+  const idMeta = propMeta.id || {};
+  const idType = String(idMeta.type || '').toLowerCase();
+  const idFormat = String(idMeta.format || '').toLowerCase();
+
+  cachedPostinganSchema = {
+    tableName,
+    columns,
+    authorCol: pick(['author', 'author_id', 'user_id', 'sender', 'pengirim'], 'author'),
+    captionCol: pick(['caption', 'text', 'isi', 'judul', 'title', 'deskripsi'], 'caption'),
+    imageCol: pick(['image_url', 'url', 'foto_url', 'photo_url', 'foto', 'gambar'], 'image_url'),
+    idIsInt: idType === 'integer' || idFormat.includes('int') || idFormat.includes('serial'),
+    idIsUuid: idFormat.includes('uuid'),
+  };
+  return cachedPostinganSchema;
+}
+
 function mapPostinganRow(row: Record<string, unknown>, idx = 0): GalleryPhoto {
-  const author = toRole(row.author, 'faiz');
+  const author = toRole(
+    row.author ?? row.author_id ?? row.user_id ?? row.sender ?? row.pengirim,
+    'faiz'
+  );
   let dateLabel = 'baru aja';
   if (row.created_at) {
     try {
@@ -826,8 +945,12 @@ function mapPostinganRow(row: Record<string, unknown>, idx = 0): GalleryPhoto {
   return {
     id: String(row.id ?? `post-${idx}`),
     author,
-    url: String(row.image_url ?? ''),
-    caption: String(row.caption ?? ''),
+    url: String(
+      row.image_url ?? row.url ?? row.foto_url ?? row.photo_url ?? row.foto ?? row.gambar ?? ''
+    ),
+    caption: String(
+      row.caption ?? row.text ?? row.isi ?? row.judul ?? row.title ?? row.deskripsi ?? ''
+    ),
     dateLabel,
     tag: 'berdua',
     created_at: row.created_at ? String(row.created_at) : undefined,
@@ -838,13 +961,23 @@ export async function fetchPostingan(): Promise<GalleryPhoto[]> {
   const sb = activeClient;
   if (!sb) return [];
   try {
-    const { data, error } = await sb
-      .from('postingan_keiz')
+    const schema = await discoverPostinganSchema(sb);
+    const tableName = schema?.tableName || 'postingan_keiz';
+
+    let { data, error } = await sb
+      .from(tableName)
       .select('*')
       .order('created_at', { ascending: false })
       .limit(100);
+
+    if (error && (error.code === '42703' || error.code === 'PGRST204' || String(error.message).includes('created_at'))) {
+      const retry = await sb.from(tableName).select('*').limit(100);
+      data = retry.data;
+      error = retry.error;
+    }
+
     if (error) {
-      if (error.code !== '42P01') {
+      if (error.code !== '42P01' && error.code !== 'PGRST205') {
         void checkSupabaseConnection();
       }
       return [];
@@ -862,45 +995,118 @@ export async function addPostingan(payload: {
   author: Role;
   caption: string;
   image_url: string;
-}): Promise<GalleryPhoto | null> {
+}): Promise<GalleryPhoto> {
+  const createdAt = new Date().toISOString();
   const newPost: GalleryPhoto = {
-    id: `post-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    id: makeUuid(),
     author: payload.author,
     url: payload.image_url,
     caption: payload.caption.trim() || 'momen gemes kita berdua 💖',
     dateLabel: 'baru aja',
     tag: 'berdua',
-    created_at: new Date().toISOString(),
+    created_at: createdAt,
   };
 
   const sb = activeClient;
-  if (sb) {
-    try {
-      const { error } = await sb.from('postingan_keiz').insert([
-        {
-          id: newPost.id,
-          author: toDbUserName(payload.author),
-          caption: newPost.caption,
-          image_url: newPost.url,
-          created_at: newPost.created_at,
-        },
-      ]);
-      if (error) {
-        emitSupabaseError('Gagal upload postingan ke Supabase!');
-      }
-    } catch {
-      emitSupabaseError('Gagal upload postingan ke Supabase!');
-    }
+  if (!sb) {
+    return {
+      ...newPost,
+      failed: true,
+      errorDetails: 'Supabase belum terhubung',
+    };
   }
-  localChannel?.postMessage({ type: 'postingan_update', payload: newPost });
-  return newPost;
+
+  try {
+    const schema = await discoverPostinganSchema(sb);
+    const tableName = schema?.tableName || 'postingan_keiz';
+    const attemptPayload: Record<string, unknown> = {};
+
+    if (schema) {
+      if (schema.columns.has(schema.authorCol)) {
+        attemptPayload[schema.authorCol] = toDbUserName(payload.author);
+      }
+      if (schema.columns.has(schema.captionCol)) {
+        attemptPayload[schema.captionCol] = newPost.caption;
+      }
+      if (schema.columns.has(schema.imageCol)) {
+        attemptPayload[schema.imageCol] = newPost.url;
+      }
+      if (schema.columns.has('created_at')) {
+        attemptPayload.created_at = createdAt;
+      }
+    } else {
+      attemptPayload.author = toDbUserName(payload.author);
+      attemptPayload.caption = newPost.caption;
+      attemptPayload.image_url = newPost.url;
+      attemptPayload.created_at = createdAt;
+    }
+
+    delete attemptPayload.id;
+
+    let insertedRow: Record<string, unknown> | null = null;
+    let lastError: { message?: string; details?: string; hint?: string; code?: string } | null = null;
+
+    for (let attempt = 0; attempt < 5; attempt++) {
+      delete attemptPayload.id;
+      const { data, error } = await sb
+        .from(tableName)
+        .insert([attemptPayload])
+        .select()
+        .single();
+
+      if (!error && data) {
+        insertedRow = data as Record<string, unknown>;
+        lastError = null;
+        break;
+      }
+
+      lastError = error;
+      console.log('[KEIZ Postingan INSERT error]', error);
+      const errMsg = String(error?.message || '');
+      const missingCol =
+        errMsg.match(/Could not find the '([^']+)' column/i) ||
+        errMsg.match(/column "([^"]+)" of relation "[^"]+" does not exist/i);
+
+      if (missingCol?.[1] && missingCol[1] in attemptPayload) {
+        delete attemptPayload[missingCol[1]];
+        cachedPostinganSchema?.columns.delete(missingCol[1]);
+        continue;
+      }
+
+      break;
+    }
+
+    if (lastError || !insertedRow) {
+      const msg = lastError?.message || 'Gagal upload foto ke Supabase!';
+      emitSupabaseError('Gagal upload foto ke Supabase!');
+      return {
+        ...newPost,
+        failed: true,
+        errorDetails: msg,
+      };
+    }
+
+    const mapped = mapPostinganRow(insertedRow);
+    localChannel?.postMessage({ type: 'postingan_update', payload: mapped });
+    return mapped;
+  } catch (err) {
+    console.log('[KEIZ Album INSERT exception]', err);
+    emitSupabaseError('Gagal upload foto ke Supabase!');
+    return {
+      ...newPost,
+      failed: true,
+      errorDetails: err instanceof Error ? err.message : 'Gagal upload foto',
+    };
+  }
 }
 
 export async function deletePostingan(id: string): Promise<void> {
   const sb = activeClient;
   if (sb) {
     try {
-      await sb.from('postingan_keiz').delete().eq('id', id);
+      const schema = await discoverPostinganSchema(sb);
+      const tableName = schema?.tableName || 'postingan_keiz';
+      await sb.from(tableName).delete().eq('id', id);
     } catch {
       // ignore
     }
@@ -908,7 +1114,349 @@ export async function deletePostingan(id: string): Promise<void> {
   localChannel?.postMessage({ type: 'postingan_update' });
 }
 
-// ---------- CHAT BUCIN (tabel: chat) ----------
+// ---------- ALBUM POLAROID (tabel: keiz_album + bucket: keiz-album) ----------
+const ALBUM_BUCKET = 'keiz-album';
+const ALBUM_TABLE = 'keiz_album';
+
+interface AlbumSchema {
+  columns: Set<string>;
+  authorCol: string;
+  captionCol: string;
+  imageCol: string;
+  storagePathCol: string | null;
+  idIsInt: boolean;
+  idIsUuid: boolean;
+}
+
+let cachedAlbumSchema: AlbumSchema | null = null;
+
+async function discoverAlbumSchema(sb: SupabaseClient): Promise<AlbumSchema | null> {
+  if (cachedAlbumSchema) return cachedAlbumSchema;
+
+  const columns = new Set<string>();
+  let propMeta: Record<string, { type?: string; format?: string }> = {};
+  const { url, anonKey } = getSupabaseConfig();
+
+  if (url && anonKey) {
+    try {
+      const controller = new AbortController();
+      const timer = window.setTimeout(() => controller.abort(), 5000);
+      const res = await fetch(`${url.replace(/\/+$/, '')}/rest/v1/`, {
+        headers: {
+          apikey: anonKey,
+          Authorization: `Bearer ${anonKey}`,
+          Accept: 'application/openapi+json, application/json',
+        },
+        signal: controller.signal,
+      });
+      window.clearTimeout(timer);
+      if (res.ok) {
+        const spec = (await res.json()) as {
+          definitions?: Record<string, { properties?: Record<string, { type?: string; format?: string }> }>;
+          components?: { schemas?: Record<string, { properties?: Record<string, { type?: string; format?: string }> }> };
+        };
+        const defs = spec?.definitions ?? spec?.components?.schemas ?? {};
+        propMeta = defs[ALBUM_TABLE]?.properties ?? {};
+        Object.keys(propMeta).forEach((c) => columns.add(c));
+      }
+    } catch {
+      // fallback below
+    }
+  }
+
+  if (columns.size === 0) {
+    try {
+      const { data, error } = await sb.from(ALBUM_TABLE).select('*').limit(1);
+      if (!error && Array.isArray(data) && data.length > 0) {
+        Object.keys(data[0] as Record<string, unknown>).forEach((k) => columns.add(k));
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  if (columns.size === 0) return null;
+
+  const pick = (opts: string[], fallback: string) =>
+    opts.find((c) => columns.has(c)) ?? fallback;
+  const pickOpt = (opts: string[]) => opts.find((c) => columns.has(c)) ?? null;
+
+  const idMeta = propMeta.id || {};
+  const idType = String(idMeta.type || '').toLowerCase();
+  const idFormat = String(idMeta.format || '').toLowerCase();
+
+  cachedAlbumSchema = {
+    columns,
+    authorCol: pick(['author', 'uploaded_by', 'author_id', 'user_id', 'user', 'sender', 'pengirim'], 'author'),
+    captionCol: pick(['caption', 'text', 'isi', 'judul', 'title', 'deskripsi'], 'caption'),
+    imageCol: pick(['image_url', 'url', 'foto_url', 'photo_url', 'foto', 'gambar', 'public_url'], 'image_url'),
+    storagePathCol: pickOpt(['storage_path', 'file_path', 'path', 'object_path']),
+    idIsInt: idType === 'integer' || idFormat.includes('int') || idFormat.includes('serial'),
+    idIsUuid: idFormat.includes('uuid'),
+  };
+  return cachedAlbumSchema;
+}
+
+export async function fetchAlbumPhotos(): Promise<GalleryPhoto[]> {
+  const sb = activeClient;
+  if (!sb) return [];
+  try {
+    void discoverAlbumSchema(sb);
+    let { data, error } = await sb
+      .from(ALBUM_TABLE)
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(120);
+
+    if (
+      error &&
+      (error.code === '42703' ||
+        error.code === 'PGRST204' ||
+        String(error.message).includes('created_at'))
+    ) {
+      const retry = await sb.from(ALBUM_TABLE).select('*').limit(120);
+      data = retry.data;
+      error = retry.error;
+    }
+
+    if (error) {
+      if (error.code !== '42P01' && error.code !== 'PGRST205') {
+        void checkSupabaseConnection();
+      }
+      return [];
+    }
+
+    return Array.isArray(data)
+      ? data.map((r, i) => {
+          const row = r as Record<string, unknown>;
+          const mapped = mapPostinganRow(row, i);
+          if (!mapped.url && row.public_url) {
+            mapped.url = String(row.public_url);
+          }
+          return mapped;
+        })
+      : [];
+  } catch {
+    void checkSupabaseConnection();
+    return [];
+  }
+}
+
+export async function addAlbumPhoto(payload: {
+  author: Role;
+  caption: string;
+  file?: Blob | null;
+  fallbackDataUrl: string;
+}): Promise<GalleryPhoto> {
+  const createdAt = new Date().toISOString();
+  const caption = payload.caption.trim() || 'momen gemes kita berdua 💖';
+  const tempPhoto: GalleryPhoto = {
+    id: makeUuid(),
+    author: payload.author,
+    url: payload.fallbackDataUrl,
+    caption,
+    dateLabel: 'baru aja',
+    tag: 'berdua',
+    created_at: createdAt,
+  };
+
+  const sb = activeClient;
+  if (!sb) {
+    return {
+      ...tempPhoto,
+      failed: true,
+      errorDetails: 'Supabase belum terhubung',
+    };
+  }
+
+  // 1. Upload file ke Storage bucket 'keiz-album'
+  if (!payload.file) {
+    return {
+      ...tempPhoto,
+      failed: true,
+      errorDetails: "Gagal memproses file gambar sebelum upload ke bucket 'keiz-album'.",
+    };
+  }
+
+  let finalImageUrl = '';
+  let uploadedStoragePath = '';
+  const fileName = `${payload.author}/${Date.now()}-${Math.random()
+    .toString(36)
+    .slice(2, 8)}.jpg`;
+
+  try {
+    const { data: uploadData, error: uploadErr } = await sb.storage
+      .from(ALBUM_BUCKET)
+      .upload(fileName, payload.file, {
+        contentType: payload.file.type || 'image/jpeg',
+        upsert: false,
+      });
+
+    if (uploadErr || !uploadData?.path) {
+      const storageErrMsg = `Gagal upload foto ke bucket '${ALBUM_BUCKET}': ${
+        uploadErr?.message || 'Upload gagal'
+      }`;
+      console.log('[KEIZ Album storage upload error]', uploadErr);
+      emitSupabaseError(storageErrMsg);
+      return {
+        ...tempPhoto,
+        failed: true,
+        errorDetails: storageErrMsg,
+      };
+    }
+
+    uploadedStoragePath = uploadData.path;
+    const { data: pub } = sb.storage
+      .from(ALBUM_BUCKET)
+      .getPublicUrl(uploadData.path);
+
+    if (!pub?.publicUrl) {
+      const urlErr = `Upload ke '${ALBUM_BUCKET}' berhasil, tapi gagal ambil public URL.`;
+      emitSupabaseError(urlErr);
+      return {
+        ...tempPhoto,
+        failed: true,
+        errorDetails: urlErr,
+      };
+    }
+
+    finalImageUrl = pub.publicUrl;
+  } catch (storageErr) {
+    const errMsg =
+      storageErr instanceof Error
+        ? storageErr.message
+        : 'Gagal menghubungi Storage keiz-album';
+    console.log('[KEIZ Album storage exception]', storageErr);
+    emitSupabaseError(`Gagal upload ke bucket '${ALBUM_BUCKET}': ${errMsg}`);
+    return {
+      ...tempPhoto,
+      failed: true,
+      errorDetails: `Gagal upload ke bucket '${ALBUM_BUCKET}': ${errMsg}`,
+    };
+  }
+
+  // 2. Simpan URL + caption ke tabel 'keiz_album'
+  try {
+    const schema = await discoverAlbumSchema(sb);
+    const attemptPayload: Record<string, unknown> = {};
+
+    if (schema) {
+      if (schema.columns.has(schema.authorCol)) {
+        attemptPayload[schema.authorCol] = toDbUserName(payload.author);
+      }
+      if (schema.columns.has(schema.captionCol)) {
+        attemptPayload[schema.captionCol] = caption;
+      }
+      if (schema.columns.has(schema.imageCol)) {
+        attemptPayload[schema.imageCol] = finalImageUrl;
+      }
+      if (schema.storagePathCol && uploadedStoragePath) {
+        attemptPayload[schema.storagePathCol] = uploadedStoragePath;
+      }
+      if (schema.columns.has('created_at')) {
+        attemptPayload.created_at = createdAt;
+      }
+    } else {
+      attemptPayload.author = toDbUserName(payload.author);
+      attemptPayload.caption = caption;
+      attemptPayload.image_url = finalImageUrl;
+      if (uploadedStoragePath) {
+        attemptPayload.storage_path = uploadedStoragePath;
+      }
+      attemptPayload.created_at = createdAt;
+    }
+
+    delete attemptPayload.id;
+
+    let insertedRow: Record<string, unknown> | null = null;
+    let lastError: { message?: string; details?: string; hint?: string; code?: string } | null = null;
+
+    for (let attempt = 0; attempt < 6; attempt++) {
+      delete attemptPayload.id;
+      console.log('[KEIZ Album INSERT attempt]', JSON.stringify(attemptPayload));
+      const { data, error } = await sb
+        .from(ALBUM_TABLE)
+        .insert([attemptPayload])
+        .select()
+        .single();
+
+      if (!error && data) {
+        insertedRow = data as Record<string, unknown>;
+        lastError = null;
+        break;
+      }
+
+      lastError = error;
+      console.log('[KEIZ Album INSERT error]', error);
+      const errMsg = String(error?.message || '');
+      const missingCol =
+        errMsg.match(/Could not find the '([^']+)' column/i) ||
+        errMsg.match(/column "([^"]+)" of relation "[^"]+" does not exist/i);
+
+      if (missingCol?.[1] && missingCol[1] in attemptPayload) {
+        delete attemptPayload[missingCol[1]];
+        cachedAlbumSchema?.columns.delete(missingCol[1]);
+        continue;
+      }
+
+      break;
+    }
+
+    if (lastError || !insertedRow) {
+      const formattedErr = `ERROR: ${lastError?.message ?? 'Gagal upload foto'} | details: ${
+        lastError?.details ?? '-'
+      } | hint: ${lastError?.hint ?? '-'} | code: ${lastError?.code ?? '-'}`;
+      emitSupabaseError('Gagal upload foto ke keiz_album!');
+      return {
+        ...tempPhoto,
+        url: finalImageUrl,
+        failed: true,
+        errorDetails: formattedErr,
+      };
+    }
+
+    const mapped = mapPostinganRow(insertedRow);
+    if (!mapped.url && insertedRow.public_url) {
+      mapped.url = String(insertedRow.public_url);
+    }
+    localChannel?.postMessage({ type: 'album_update', payload: mapped });
+    return mapped;
+  } catch (err) {
+    console.log('[KEIZ Album INSERT exception]', err);
+    emitSupabaseError('Gagal upload foto ke keiz_album!');
+    return {
+      ...tempPhoto,
+      url: finalImageUrl,
+      failed: true,
+      errorDetails: err instanceof Error ? err.message : 'Gagal upload foto',
+    };
+  }
+}
+
+export async function deleteAlbumPhoto(id: string, imageUrl?: string): Promise<void> {
+  const sb = activeClient;
+  if (sb) {
+    try {
+      await sb.from(ALBUM_TABLE).delete().eq('id', id);
+      if (imageUrl && imageUrl.includes(`/${ALBUM_BUCKET}/`)) {
+        const idx = imageUrl.indexOf(`/${ALBUM_BUCKET}/`);
+        const objectPath = decodeURIComponent(
+          imageUrl.slice(idx + ALBUM_BUCKET.length + 2).split('?')[0]
+        );
+        if (objectPath) {
+          await sb.storage.from(ALBUM_BUCKET).remove([objectPath]);
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+  localChannel?.postMessage({ type: 'album_update' });
+}
+
+// ---------- CHAT BUCIN (tabel: keiz_chat) ----------
+const CHAT_TABLE = 'keiz_chat';
+
 interface ChatTableSchema {
   columns: Set<string>;
   senderCol: string;
@@ -959,8 +1507,8 @@ async function discoverChatSchema(sb: SupabaseClient): Promise<ChatTableSchema |
             components?: { schemas?: Record<string, { properties?: Record<string, { type?: string; format?: string; default?: unknown }> }> };
           };
           const props =
-            spec?.definitions?.chat?.properties ??
-            spec?.components?.schemas?.chat?.properties;
+            spec?.definitions?.[CHAT_TABLE]?.properties ??
+            spec?.components?.schemas?.[CHAT_TABLE]?.properties;
           if (props && typeof props === 'object') {
             Object.entries(props).forEach(([col, meta]) => {
               columns.add(col);
@@ -973,10 +1521,10 @@ async function discoverChatSchema(sb: SupabaseClient): Promise<ChatTableSchema |
       }
     }
 
-    // 2. Cek 1 row contoh dari tabel chat & users_keiz ID
+    // 2. Cek 1 row contoh dari tabel keiz_chat & users_keiz ID
     try {
       const [{ data: sampleRows }, { data: userRows }] = await Promise.all([
-        sb.from('chat').select('*').limit(1),
+        sb.from(CHAT_TABLE).select('*').limit(1),
         sb.from('users_keiz').select('id, username, nama').limit(10),
       ]);
 
@@ -1037,7 +1585,6 @@ async function discoverChatSchema(sb: SupabaseClient): Promise<ChatTableSchema |
         'isi',
         'content',
         'pesan',
-        'chat',
         'body',
       ]) || 'message';
 
@@ -1130,7 +1677,6 @@ function mapChatRow(row: Record<string, unknown>, idx = 0): ChatMessage {
         row.isi ??
         row.content ??
         row.pesan ??
-        row.chat ??
         row.body ??
         ''
     ),
@@ -1150,34 +1696,60 @@ function mapChatRow(row: Record<string, unknown>, idx = 0): ChatMessage {
   };
 }
 
+let lastFetchErrorKey = '';
+
 export async function fetchChats(): Promise<ChatMessage[]> {
   const sb = activeClient;
   if (!sb) return [];
   try {
     void discoverChatSchema(sb);
-    const { data, error } = await sb
-      .from('chat')
+    let { data, error } = await sb
+      .from(CHAT_TABLE)
       .select('*')
       .order('created_at', { ascending: true })
       .limit(200);
+
+    if (
+      error &&
+      (error.code === '42703' ||
+        error.code === 'PGRST204' ||
+        String(error.message || '').includes('created_at'))
+    ) {
+      const retry = await sb.from(CHAT_TABLE).select('*').limit(200);
+      data = retry.data;
+      error = retry.error;
+    }
+
     if (error) {
-      console.error(
-        '[KEIZ Chat fetchChats error]',
-        error.message,
-        error.details,
-        error.hint,
-        error.code
-      );
-      if (error.code !== '42P01') {
+      const errKey = `${error.code ?? ''}:${error.message ?? ''}`;
+      if (errKey !== lastFetchErrorKey) {
+        lastFetchErrorKey = errKey;
+        console.warn(
+          '[KEIZ Chat fetchChats error]',
+          error,
+          error.message,
+          error.details,
+          error.hint,
+          error.code
+        );
+      }
+      if (error.code !== '42P01' && error.code !== 'PGRST205') {
         void checkSupabaseConnection();
       }
       return [];
     }
+    lastFetchErrorKey = '';
     return Array.isArray(data)
-      ? data.map((row, idx) => mapChatRow(row as Record<string, unknown>, idx))
+      ? data
+          .map((row, idx) => mapChatRow(row as Record<string, unknown>, idx))
+          .filter(
+            (m) =>
+              (m.sender === 'faiz' && m.receiver === 'kenat') ||
+              (m.sender === 'kenat' && m.receiver === 'faiz')
+          )
       : [];
   } catch (err) {
-    console.error('[KEIZ Chat fetchChats exception]', err);
+    console.warn('[KEIZ Chat fetchChats exception]', err);
     void checkSupabaseConnection();
     return [];
   }
@@ -1225,9 +1797,6 @@ export async function sendChatMessage(
 
     const candidatePayload: Record<string, unknown> = {};
     if (schema) {
-      if (schema.columns.has('id') && !schema.idIsInt) {
-        candidatePayload.id = newMsg.id;
-      }
       if (schema.columns.has(schema.senderCol)) {
         candidatePayload[schema.senderCol] = senderVal;
       }
@@ -1268,15 +1837,29 @@ export async function sendChatMessage(
         candidatePayload.react = newMsg.react;
       }
     } else {
-      // Fallback jika OpenAPI schema tidak tersedia: kirim kolom inti minimal
-      candidatePayload.id = newMsg.id;
+      // Fallback jika OpenAPI schema belum terbaca: kirim kolom lengkap keiz_chat tanpa id
       candidatePayload.sender = senderVal;
       candidatePayload.receiver = receiverVal;
       candidatePayload.message = newMsg.message;
+      candidatePayload.type = newMsg.type;
+      if (newMsg.image_url !== undefined) candidatePayload.image_url = newMsg.image_url;
+      if (newMsg.voice_url !== undefined) candidatePayload.voice_url = newMsg.voice_url;
+      if (newMsg.voice_duration !== undefined) {
+        candidatePayload.voice_duration = newMsg.voice_duration;
+      }
+      if (newMsg.reply_to) candidatePayload.reply_to = newMsg.reply_to;
+      if (newMsg.reply_to_text) candidatePayload.reply_to_text = newMsg.reply_to_text;
+      if (newMsg.reply_to_sender) {
+        candidatePayload.reply_to_sender = toDbUserName(newMsg.reply_to_sender);
+      }
+      if (newMsg.react !== undefined) candidatePayload.react = newMsg.react;
+      candidatePayload.is_read = false;
+      candidatePayload.is_deleted = false;
       candidatePayload.created_at = newMsg.created_at;
     }
 
-    let attemptPayload = { ...candidatePayload };
+    const attemptPayload = { ...candidatePayload };
+    delete attemptPayload.id;
     let insertedRow: Record<string, unknown> | null = null;
     let lastError: {
       message?: string;
@@ -1286,9 +1869,10 @@ export async function sendChatMessage(
     } | null = null;
 
     for (let attempt = 0; attempt < 6; attempt++) {
+      delete attemptPayload.id;
       console.log('[KEIZ Chat INSERT attempt]', JSON.stringify(attemptPayload));
       const { data, error } = await sb
-        .from('chat')
+        .from(CHAT_TABLE)
         .insert([attemptPayload])
         .select()
         .single();
@@ -1306,22 +1890,12 @@ export async function sendChatMessage(
       const errMsg = String(error?.message || '');
       const missingColMatch =
         errMsg.match(/Could not find the '([^']+)' column/i) ||
-        errMsg.match(/column "([^"]+)" of relation "chat" does not exist/i);
+        errMsg.match(/column "([^"]+)" of relation "[^"]+" does not exist/i);
 
       if (missingColMatch?.[1] && missingColMatch[1] in attemptPayload) {
         const badCol = missingColMatch[1];
         delete attemptPayload[badCol];
         cachedChatSchema?.columns.delete(badCol);
-        continue;
-      }
-
-      // Jika id format gagal (misal id auto-increment integer atau tipe beda), coba tanpa id
-      if (
-        'id' in attemptPayload &&
-        (errMsg.toLowerCase().includes('invalid input syntax') ||
-          errMsg.toLowerCase().includes('generated always'))
-      ) {
-        delete attemptPayload.id;
         continue;
       }
 
@@ -1332,9 +1906,8 @@ export async function sendChatMessage(
       const formattedErr = `ERROR: ${lastError?.message ?? '-'} | details: ${
         lastError?.details ?? '-'
       } | hint: ${lastError?.hint ?? '-'} | code: ${lastError?.code ?? '-'}`;
-      console.log('[KEIZ Chat INSERT final error]', lastError);
+      console.log('[KEIZ Chat INSERT final error object]', lastError);
       console.log('[KEIZ Chat INSERT final payload]', JSON.stringify(attemptPayload));
-      console.error('[KEIZ Chat INSERT error]', formattedErr);
       emitSupabaseError('Gagal kirim chat ke Supabase!');
       return {
         ...newMsg,
@@ -1348,6 +1921,10 @@ export async function sendChatMessage(
     const savedMsg: ChatMessage = {
       ...newMsg,
       ...mapped,
+      id:
+        insertedRow.id !== undefined && insertedRow.id !== null
+          ? String(insertedRow.id)
+          : mapped.id,
       type: mapped.type || newMsg.type,
       image_url: mapped.image_url ?? newMsg.image_url,
       voice_url: mapped.voice_url ?? newMsg.voice_url,
@@ -1364,8 +1941,16 @@ export async function sendChatMessage(
   } catch (err) {
     console.log('[KEIZ Chat INSERT exception object]', err);
     console.log('[KEIZ Chat INSERT exception payload]', JSON.stringify(newMsg));
-    const msg = err instanceof Error ? err.message : String(err);
-    const formattedErr = `ERROR: ${msg} | details: - | hint: - | code: EXCEPTION`;
+    const errObj = err as {
+      message?: string;
+      details?: string;
+      hint?: string;
+      code?: string;
+    };
+    const msg = err instanceof Error ? err.message : String(errObj?.message ?? err);
+    const formattedErr = `ERROR: ${msg} | details: ${errObj?.details ?? '-'} | hint: ${
+      errObj?.hint ?? '-'
+    } | code: ${errObj?.code ?? 'EXCEPTION'}`;
     emitSupabaseError('Gagal kirim chat ke Supabase!');
     return {
       ...newMsg,
@@ -1387,7 +1972,7 @@ export async function markChatsAsRead(viewer: Role): Promise<void> {
     const receiverCol = schema?.receiverCol || 'receiver';
     const receiverDb = toDbUserName(viewer);
     await sb
-      .from('chat')
+      .from(CHAT_TABLE)
       .update({ is_read: true })
       .or(`${receiverCol}.eq.${receiverDb},${receiverCol}.eq.${viewer}`)
       .eq('is_read', false);
@@ -1403,12 +1988,13 @@ export async function updateChatReact(id: string, react?: string): Promise<ChatM
       const schema = await discoverChatSchema(sb);
       if (!schema || schema.columns.has('react')) {
         const { error } = await sb
-          .from('chat')
+          .from(CHAT_TABLE)
           .update({ react: react ?? null })
           .eq('id', id);
         if (error) {
-          console.error(
+          console.log(
             '[KEIZ Chat react error]',
+            error,
             error.message,
             error.details,
             error.hint,
@@ -1417,7 +2003,7 @@ export async function updateChatReact(id: string, react?: string): Promise<ChatM
         }
       }
     } catch (err) {
-      console.error('[KEIZ Chat react exception]', err);
+      console.log('[KEIZ Chat react exception]', err);
     }
   }
   localChannel?.postMessage({ type: 'chat_update' });
@@ -1430,10 +2016,11 @@ export async function deleteChatMessage(id: string): Promise<ChatMessage[]> {
     try {
       const schema = await discoverChatSchema(sb);
       if (schema && !schema.columns.has('is_deleted')) {
-        const { error } = await sb.from('chat').delete().eq('id', id);
+        const { error } = await sb.from(CHAT_TABLE).delete().eq('id', id);
         if (error) {
-          console.error(
+          console.log(
             '[KEIZ Chat delete error]',
+            error,
             error.message,
             error.details,
             error.hint,
@@ -1442,12 +2029,13 @@ export async function deleteChatMessage(id: string): Promise<ChatMessage[]> {
         }
       } else {
         const { error } = await sb
-          .from('chat')
+          .from(CHAT_TABLE)
           .update({ is_deleted: true })
           .eq('id', id);
         if (error) {
-          console.error(
+          console.log(
             '[KEIZ Chat soft-delete error]',
+            error,
             error.message,
             error.details,
             error.hint,
@@ -1456,7 +2044,7 @@ export async function deleteChatMessage(id: string): Promise<ChatMessage[]> {
         }
       }
     } catch (err) {
-      console.error('[KEIZ Chat delete exception]', err);
+      console.log('[KEIZ Chat delete exception]', err);
     }
   }
   localChannel?.postMessage({ type: 'chat_update' });
@@ -1482,24 +2070,24 @@ export function subscribeChatRealtime(
     }
     if (!sb) return;
     chatChan = sb
-      .channel(`chat_rt_${Math.random().toString(36).slice(2, 7)}`)
+      .channel('keiz_chat')
       .on(
         'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'chat' },
+        { event: 'INSERT', schema: 'public', table: CHAT_TABLE },
         (payload) => {
           onInsert(mapChatRow(payload.new as Record<string, unknown>));
         }
       )
       .on(
         'postgres_changes',
-        { event: 'UPDATE', schema: 'public', table: 'chat' },
+        { event: 'UPDATE', schema: 'public', table: CHAT_TABLE },
         (payload) => {
           onUpdate(mapChatRow(payload.new as Record<string, unknown>));
         }
       )
       .on(
         'postgres_changes',
-        { event: 'DELETE', schema: 'public', table: 'chat' },
+        { event: 'DELETE', schema: 'public', table: CHAT_TABLE },
         () => {
           onRefresh();
         }
@@ -1569,7 +2157,6 @@ export async function addSongItem(song: Omit<SongItem, 'id'>): Promise<SongItem>
         .from('lagu_keiz')
         .insert([
           {
-            id: newSong.id,
             judul: newSong.title,
             penyanyi: newSong.artist,
             cover_url: newSong.artwork,
@@ -1582,8 +2169,11 @@ export async function addSongItem(song: Omit<SongItem, 'id'>): Promise<SongItem>
         ])
         .select()
         .single();
-      if (!error && data) {
-        newSong.id = String(data.id ?? newSong.id);
+      if (error) {
+        console.log('[KEIZ Lagu INSERT error]', error);
+        emitSupabaseError('Gagal nambah lagu ke Supabase!');
+      } else if (data && data.id !== undefined && data.id !== null) {
+        newSong.id = String(data.id);
       }
     } catch {
       emitSupabaseError('Gagal nambah lagu ke Supabase!');
@@ -1618,7 +2208,7 @@ export async function toggleSongFavorite(id: string, favorite: boolean): Promise
   localChannel?.postMessage({ type: 'lagu_update' });
 }
 
-// ---------- NOBAR SYNC REAL-TIME (tabel: nobar_sync, id = 1) ----------
+// ---------- NOBAR SYNC REAL-TIME (tabel: keiz_nobar_sync, id = 1) ----------
 function mapNobarRow(row: Record<string, unknown>): NobarSyncState | null {
   const videoId = String(row.videoId ?? row.video_id ?? '').trim();
   const ytUrl = String(row.youtube_url ?? '');
@@ -1649,7 +2239,7 @@ export async function fetchNobarSync(): Promise<NobarSyncState | null> {
   if (!sb) return null;
   try {
     const { data, error } = await sb
-      .from('nobar_sync')
+      .from('keiz_nobar_sync')
       .select('*')
       .eq('id', 1)
       .maybeSingle();
@@ -1677,7 +2267,7 @@ export async function upsertNobarSync(
     updated_at: new Date().toISOString(),
   };
 
-  localChannel?.postMessage({ type: 'nobar_sync_update', payload: nextState });
+  localChannel?.postMessage({ type: 'keiz_nobar_sync_update', payload: nextState });
 
   if (activeNobarChannel) {
     activeNobarChannel
@@ -1692,7 +2282,7 @@ export async function upsertNobarSync(
   const sb = activeClient;
   if (sb) {
     try {
-      const { error } = await sb.from('nobar_sync').upsert([
+      const { error } = await sb.from('keiz_nobar_sync').upsert([
         {
           id: 1,
           youtube_url: nextState.youtube_url,
@@ -1718,7 +2308,7 @@ export async function upsertNobarSync(
 }
 
 export async function clearNobarSync(): Promise<void> {
-  localChannel?.postMessage({ type: 'nobar_sync_update', payload: null });
+  localChannel?.postMessage({ type: 'keiz_nobar_sync_update', payload: null });
 
   if (activeNobarChannel) {
     activeNobarChannel
@@ -1733,7 +2323,7 @@ export async function clearNobarSync(): Promise<void> {
   const sb = activeClient;
   if (sb) {
     try {
-      await sb.from('nobar_sync').upsert([
+      await sb.from('keiz_nobar_sync').upsert([
         {
           id: 1,
           youtube_url: '',
@@ -1759,7 +2349,7 @@ export function subscribeNobarChannel(
   onRoomMembers?: (members: Role[]) => void
 ): () => void {
   const handleLocal = (ev: MessageEvent) => {
-    if (ev.data?.type === 'nobar_sync_update') {
+    if (ev.data?.type === 'keiz_nobar_sync_update') {
       onSync((ev.data.payload as NobarSyncState | null) ?? null);
     }
   };
@@ -1773,14 +2363,14 @@ export function subscribeNobarChannel(
     }
     if (!sb) return;
     const ch = sb
-      .channel('nobar_sync', {
+      .channel('keiz_nobar_sync', {
         config: {
           presence: { key: currentUser },
         },
       })
       .on(
         'postgres_changes',
-        { event: '*', schema: 'public', table: 'nobar_sync' },
+        { event: '*', schema: 'public', table: 'keiz_nobar_sync' },
         (payload) => {
           if (payload.eventType === 'DELETE') {
             onSync(null);
@@ -1820,7 +2410,7 @@ export function subscribeNobarChannel(
   };
 }
 
-// ---------- MUSIC SYNC REAL-TIME (tabel: music_sync, id = 1) ----------
+// ---------- MUSIC SYNC REAL-TIME (tabel: keiz_music_sync, id = 1) ----------
 function mapMusicRow(row: Record<string, unknown>): MusicSyncState | null {
   const videoId = String(row.videoId ?? row.video_id ?? '').trim();
   if (!videoId) return null;
@@ -1853,7 +2443,7 @@ export async function fetchMusicSync(): Promise<MusicSyncState | null> {
   if (!sb) return null;
   try {
     const { data, error } = await sb
-      .from('music_sync')
+      .from('keiz_music_sync')
       .select('*')
       .eq('id', 1)
       .maybeSingle();
@@ -1881,7 +2471,7 @@ export async function upsertMusicSync(
     updated_at: new Date().toISOString(),
   };
 
-  localChannel?.postMessage({ type: 'music_sync_update', payload: nextState });
+  localChannel?.postMessage({ type: 'keiz_music_sync_update', payload: nextState });
 
   if (activeMusicChannel) {
     activeMusicChannel
@@ -1896,7 +2486,7 @@ export async function upsertMusicSync(
   const sb = activeClient;
   if (sb) {
     try {
-      const { error } = await sb.from('music_sync').upsert([
+      const { error } = await sb.from('keiz_music_sync').upsert([
         {
           id: 1,
           youtube_url: nextState.youtube_url,
@@ -1929,7 +2519,7 @@ export function subscribeMusicChannel(
   onRoomMembers?: (members: Role[]) => void
 ): () => void {
   const handleLocal = (ev: MessageEvent) => {
-    if (ev.data?.type === 'music_sync_update') {
+    if (ev.data?.type === 'keiz_music_sync_update') {
       onSync((ev.data.payload as MusicSyncState | null) ?? null);
     }
   };
@@ -1943,14 +2533,14 @@ export function subscribeMusicChannel(
     }
     if (!sb) return;
     const ch = sb
-      .channel('music_sync', {
+      .channel('keiz_music_sync', {
         config: {
           presence: { key: currentUser },
         },
       })
       .on(
         'postgres_changes',
-        { event: '*', schema: 'public', table: 'music_sync' },
+        { event: '*', schema: 'public', table: 'keiz_music_sync' },
         (payload) => {
           if (payload.eventType === 'DELETE') {
             onSync(null);
@@ -1991,7 +2581,172 @@ export function subscribeMusicChannel(
 }
 
 // ---------- PRESENCE REAL-TIME (tabel: presence_keiz + Supabase Presence) ----------
+export const PRESENCE_STALE_MS = 35_000;
+
+export function isPresenceOnline(
+  p: PresenceState | null | undefined,
+  now = Date.now()
+): boolean {
+  if (!p || p.status !== 'online') return false;
+  if (!p.last_seen) return false;
+  const ts = Date.parse(p.last_seen);
+  if (!Number.isFinite(ts)) return false;
+  return now - ts <= PRESENCE_STALE_MS;
+}
+
+export function formatLastSeen(iso?: string | null, now = Date.now()): string {
+  if (!iso) return '';
+  const ts = Date.parse(iso);
+  if (!Number.isFinite(ts)) return '';
+  const diffMs = Math.max(0, now - ts);
+  if (diffMs < 60_000) return 'baru saja';
+
+  const d = new Date(ts);
+  const clock = d
+    .toLocaleTimeString('id-ID', {
+      hour: '2-digit',
+      minute: '2-digit',
+    })
+    .replace(':', '.');
+
+  if (diffMs < 3_600_000) {
+    const mins = Math.max(1, Math.floor(diffMs / 60_000));
+    return `${mins} menit lalu (${clock})`;
+  }
+
+  const today = new Date(now);
+  const startOfToday = new Date(
+    today.getFullYear(),
+    today.getMonth(),
+    today.getDate()
+  ).getTime();
+  const startOfTarget = new Date(
+    d.getFullYear(),
+    d.getMonth(),
+    d.getDate()
+  ).getTime();
+  const dayDiff = Math.round((startOfToday - startOfTarget) / 86_400_000);
+
+  if (dayDiff === 0) return `hari ini jam ${clock}`;
+  if (dayDiff === 1) return `kemarin jam ${clock}`;
+
+  const dateStr = d.toLocaleDateString('id-ID', {
+    day: 'numeric',
+    month: 'short',
+  });
+  return `${dateStr} jam ${clock}`;
+}
+
+export interface PartnerPresenceDisplay {
+  online: boolean;
+  isWatchingNobar: boolean;
+  isListeningMusic: boolean;
+  nobarTitle: string;
+  songTitle: string;
+  lastSeenText: string;
+  label: string;
+  shortLabel: string;
+}
+
+export function formatPartnerPresenceText(
+  partnerName: string,
+  presence: PresenceState | null | undefined,
+  now = Date.now()
+): PartnerPresenceDisplay {
+  const online = isPresenceOnline(presence, now);
+  const lastSeenText = formatLastSeen(presence?.last_seen, now);
+
+  if (!online || !presence) {
+    return {
+      online: false,
+      isWatchingNobar: false,
+      isListeningMusic: false,
+      nobarTitle: '',
+      songTitle: '',
+      lastSeenText,
+      label: lastSeenText
+        ? `${partnerName} offline · terakhir online ${lastSeenText}`
+        : `${partnerName} lagi offline`,
+      shortLabel: lastSeenText
+        ? `Offline · terakhir online ${lastSeenText}`
+        : 'Offline',
+    };
+  }
+
+  const rawPlay = (presence.lagi_play_apa || '').trim();
+  const isWatchingNobar = presence.lagi_ngapain === 'di Nobar';
+  const hasMusicMarker = rawPlay.startsWith('🎵 ');
+  const isListeningMusic =
+    !isWatchingNobar && (presence.lagi_ngapain === 'di Musik' || hasMusicMarker);
+
+  if (isWatchingNobar) {
+    const nobarTitle = rawPlay.replace(/^🎬\s*/, '').trim();
+    return {
+      online: true,
+      isWatchingNobar: true,
+      isListeningMusic: false,
+      nobarTitle,
+      songTitle: '',
+      lastSeenText,
+      label: nobarTitle
+        ? `${partnerName} lagi nonton "${nobarTitle}"`
+        : `${partnerName} lagi nonton Nobar`,
+      shortLabel: nobarTitle
+        ? `Online · lagi nonton ${nobarTitle}`
+        : 'Online · lagi nonton Nobar',
+    };
+  }
+
+  if (isListeningMusic) {
+    const songTitle = rawPlay.replace(/^🎵\s*/, '').trim();
+    if (songTitle) {
+      const extraWhere =
+        presence.lagi_ngapain !== 'di Musik' &&
+        presence.lagi_ngapain !== 'di Home'
+          ? ` (${presence.lagi_ngapain})`
+          : '';
+      return {
+        online: true,
+        isWatchingNobar: false,
+        isListeningMusic: true,
+        nobarTitle: '',
+        songTitle,
+        lastSeenText,
+        label: `${partnerName} lagi dengerin lagu "${songTitle}"${extraWhere}`,
+        shortLabel: `Online · lagi dengerin lagu ${songTitle}`,
+      };
+    }
+    return {
+      online: true,
+      isWatchingNobar: false,
+      isListeningMusic: false,
+      nobarTitle: '',
+      songTitle: '',
+      lastSeenText,
+      label: `${partnerName} lagi di Musik`,
+      shortLabel: 'Online · di Musik',
+    };
+  }
+
+  const place = presence.lagi_ngapain || 'di Home';
+  return {
+    online: true,
+    isWatchingNobar: false,
+    isListeningMusic: false,
+    nobarTitle: '',
+    songTitle: '',
+    lastSeenText,
+    label: `${partnerName} online · ${place}`,
+    shortLabel: `Online · ${place}`,
+  };
+}
+
 let activePresenceChannel: RealtimeChannel | null = null;
+let activePresenceSubscribed = false;
+const lastTrackedPresence: Record<Role, PresenceState | null> = {
+  faiz: null,
+  kenat: null,
+};
 
 function mapPresenceRow(row: Record<string, unknown>): PresenceState {
   return {
@@ -2022,35 +2777,88 @@ export async function fetchAllPresence(): Promise<Record<Role, PresenceState | n
 }
 
 export async function upsertPresence(state: PresenceState): Promise<void> {
+  lastTrackedPresence[state.user] = state;
   localChannel?.postMessage({ type: 'presence_update', payload: state });
 
-  if (activePresenceChannel) {
-    activePresenceChannel
-      .track({
-        user: toDbUserName(state.user),
-        status: state.status,
-        lagi_ngapain: state.lagi_ngapain,
-        lagi_play_apa: state.lagi_play_apa,
-        last_seen: state.last_seen,
-      })
-      .catch(() => {});
-  }
-
-  const sb = activeClient;
-  if (sb) {
-    try {
-      await sb.from('presence_keiz').upsert([
-        {
+  if (activePresenceChannel && activePresenceSubscribed) {
+    if (state.status === 'offline') {
+      activePresenceChannel.untrack().catch(() => {});
+    } else {
+      activePresenceChannel
+        .track({
           user: toDbUserName(state.user),
           status: state.status,
           lagi_ngapain: state.lagi_ngapain,
           lagi_play_apa: state.lagi_play_apa,
           last_seen: state.last_seen,
-        },
-      ]);
+        })
+        .catch(() => {});
+    }
+  }
+
+  const sb = activeClient;
+  if (sb) {
+    const rowPayload = {
+      user: toDbUserName(state.user),
+      status: state.status,
+      lagi_ngapain: state.lagi_ngapain,
+      lagi_play_apa: state.lagi_play_apa,
+      last_seen: state.last_seen,
+    };
+    try {
+      const { error } = await sb
+        .from('presence_keiz')
+        .upsert([rowPayload], { onConflict: 'user' });
+      if (error) {
+        await sb.from('presence_keiz').upsert([rowPayload]);
+      }
     } catch {
       // ignore
     }
+  }
+}
+
+export function markPresenceOfflineFast(user: Role): void {
+  const now = new Date().toISOString();
+  const offlineState: PresenceState = {
+    user,
+    status: 'offline',
+    lagi_ngapain: 'di Home',
+    lagi_play_apa: '',
+    last_seen: now,
+  };
+  lastTrackedPresence[user] = offlineState;
+  localChannel?.postMessage({ type: 'presence_update', payload: offlineState });
+
+  if (activePresenceChannel && activePresenceSubscribed) {
+    activePresenceChannel.untrack().catch(() => {});
+  }
+
+  const { url, anonKey } = getSupabaseConfig();
+  if (!url || !anonKey) return;
+  try {
+    const cleanUrl = url.replace(/\/+$/, '');
+    fetch(`${cleanUrl}/rest/v1/presence_keiz?on_conflict=user`, {
+      method: 'POST',
+      keepalive: true,
+      headers: {
+        'Content-Type': 'application/json',
+        apikey: anonKey,
+        Authorization: `Bearer ${anonKey}`,
+        Prefer: 'resolution=merge-duplicates,return=minimal',
+      },
+      body: JSON.stringify([
+        {
+          user: toDbUserName(user),
+          status: 'offline',
+          lagi_ngapain: 'di Home',
+          lagi_play_apa: '',
+          last_seen: now,
+        },
+      ]),
+    }).catch(() => {});
+  } catch {
+    // ignore
   }
 }
 
@@ -2059,24 +2867,89 @@ export function subscribePresence(
   onPresenceMap: (map: Record<Role, PresenceState | null>) => void
 ): () => void {
   const latest: Record<Role, PresenceState | null> = { faiz: null, kenat: null };
+  const realtimeOnlineRoles = new Set<Role>();
+
+  const emitNormalized = () => {
+    const now = Date.now();
+    const out: Record<Role, PresenceState | null> = { faiz: null, kenat: null };
+    (['faiz', 'kenat'] as const).forEach((role) => {
+      const row = latest[role];
+      if (!row) {
+        out[role] = null;
+        return;
+      }
+      if (role !== currentUser && realtimeOnlineRoles.has(role)) {
+        out[role] = {
+          ...row,
+          status: 'online',
+          last_seen:
+            row.last_seen && now - Date.parse(row.last_seen) <= PRESENCE_STALE_MS
+              ? row.last_seen
+              : new Date(now).toISOString(),
+        };
+        return;
+      }
+      if (row.status === 'online' && !isPresenceOnline(row, now)) {
+        out[role] = {
+          ...row,
+          status: 'offline',
+        };
+        return;
+      }
+      out[role] = row;
+    });
+    onPresenceMap(out);
+  };
 
   fetchAllPresence().then((initial) => {
     latest.faiz = initial.faiz;
     latest.kenat = initial.kenat;
-    onPresenceMap({ ...latest });
+    emitNormalized();
   });
 
   const handleLocal = (ev: MessageEvent) => {
     if (ev.data?.type === 'presence_update' && ev.data.payload) {
       const st = ev.data.payload as PresenceState;
       latest[st.user] = st;
-      onPresenceMap({ ...latest });
+      emitNormalized();
     }
   };
   localChannel?.addEventListener('message', handleLocal);
 
+  const syncRealtimePresenceState = (ch: RealtimeChannel) => {
+    const pState = ch.presenceState();
+    const seen = new Set<Role>();
+    Object.entries(pState).forEach(([k, val]) => {
+      const arr = val as Record<string, unknown>[] | undefined;
+      if (!arr || arr.length === 0) return;
+      const first = arr[0];
+      const role = toRole(String(first.user ?? k));
+      seen.add(role);
+      const incomingLastSeen = String(first.last_seen ?? new Date().toISOString());
+      const prevTs = latest[role]?.last_seen ? Date.parse(latest[role]!.last_seen) : 0;
+      const nextTs = Date.parse(incomingLastSeen) || Date.now();
+      if (nextTs >= prevTs || latest[role]?.status !== 'online') {
+        latest[role] = {
+          user: role,
+          status: 'online',
+          lagi_ngapain:
+            (first.lagi_ngapain as PresenceActivity) ||
+            latest[role]?.lagi_ngapain ||
+            'di Home',
+          lagi_play_apa: String(
+            first.lagi_play_apa ?? latest[role]?.lagi_play_apa ?? ''
+          ),
+          last_seen: new Date(Math.max(nextTs, Date.now())).toISOString(),
+        };
+      }
+    });
+    realtimeOnlineRoles.clear();
+    seen.forEach((r) => realtimeOnlineRoles.add(r));
+  };
+
   const setup = () => {
     const sb = activeClient;
+    activePresenceSubscribed = false;
     if (activePresenceChannel && sb) {
       sb.removeChannel(activePresenceChannel);
       activePresenceChannel = null;
@@ -2092,40 +2965,45 @@ export function subscribePresence(
         (payload) => {
           const mapped = mapPresenceRow(payload.new as Record<string, unknown>);
           latest[mapped.user] = mapped;
-          onPresenceMap({ ...latest });
+          if (mapped.status === 'offline') {
+            realtimeOnlineRoles.delete(mapped.user);
+          }
+          emitNormalized();
         }
       )
       .on('presence', { event: 'sync' }, () => {
-        const pState = ch.presenceState();
-        (['Faiz', 'Kenat', 'faiz', 'kenat'] as const).forEach((k) => {
-          const arr = pState[k] as Record<string, unknown>[] | undefined;
-          if (arr && arr.length > 0) {
-            const first = arr[0];
-            const role = toRole(k);
-            latest[role] = {
-              user: role,
-              status: 'online',
-              lagi_ngapain:
-                (first.lagi_ngapain as PresenceActivity) || 'di Home',
-              lagi_play_apa: String(first.lagi_play_apa ?? ''),
-              last_seen: String(first.last_seen ?? new Date().toISOString()),
-            };
-          }
-        });
-        onPresenceMap({ ...latest });
+        syncRealtimePresenceState(ch);
+        emitNormalized();
       })
       .on('presence', { event: 'leave' }, ({ key }) => {
+        syncRealtimePresenceState(ch);
         const role = toRole(key);
-        if (role !== currentUser && latest[role]) {
+        if (role !== currentUser && !realtimeOnlineRoles.has(role) && latest[role]) {
           latest[role] = {
             ...latest[role]!,
             status: 'offline',
             last_seen: new Date().toISOString(),
           };
-          onPresenceMap({ ...latest });
         }
+        emitNormalized();
       })
-      .subscribe();
+      .subscribe(async (status) => {
+        if (status === 'SUBSCRIBED') {
+          activePresenceSubscribed = true;
+          const mine = lastTrackedPresence[currentUser];
+          if (mine && mine.status === 'online') {
+            ch.track({
+              user: toDbUserName(mine.user),
+              status: mine.status,
+              lagi_ngapain: mine.lagi_ngapain,
+              lagi_play_apa: mine.lagi_play_apa,
+              last_seen: mine.last_seen,
+            }).catch(() => {});
+          }
+        } else {
+          activePresenceSubscribed = false;
+        }
+      });
 
     activePresenceChannel = ch;
   };
@@ -2133,9 +3011,31 @@ export function subscribePresence(
   setup();
   const unsubReconfig = onSupabaseReconfigured(setup);
 
+  // Re-evaluate staleness & poll DB periodically so offline/activity always stay accurate
+  const staleTimer = window.setInterval(() => {
+    emitNormalized();
+  }, 6000);
+
+  const dbPollTimer = window.setInterval(() => {
+    fetchAllPresence().then((fresh) => {
+      (['faiz', 'kenat'] as const).forEach((role) => {
+        if (role === currentUser && lastTrackedPresence[currentUser]?.status === 'online') {
+          return;
+        }
+        if (fresh[role]) {
+          latest[role] = fresh[role];
+        }
+      });
+      emitNormalized();
+    });
+  }, 10_000);
+
   return () => {
+    window.clearInterval(staleTimer);
+    window.clearInterval(dbPollTimer);
     unsubReconfig();
     localChannel?.removeEventListener('message', handleLocal);
+    activePresenceSubscribed = false;
     if (activePresenceChannel && activeClient) {
       activeClient.removeChannel(activePresenceChannel);
       activePresenceChannel = null;
@@ -2180,26 +3080,34 @@ export async function createCallOffer(
     created_at: new Date().toISOString(),
   };
 
-  localChannel?.postMessage({ type: 'call_update', payload: callObj });
-
   const sb = activeClient;
   if (sb) {
     try {
-      await sb.from('call_keiz').insert([
-        {
-          id: callObj.id,
-          caller: toDbUserName(caller),
-          callee: toDbUserName(callee),
-          status: 'ringing',
-          offer: offerSdp,
-          voice_effect: 'normal',
-          created_at: callObj.created_at,
-        },
-      ]);
+      const { data, error } = await sb
+        .from('call_keiz')
+        .insert([
+          {
+            caller: toDbUserName(caller),
+            callee: toDbUserName(callee),
+            status: 'ringing',
+            offer: offerSdp,
+            voice_effect: 'normal',
+            created_at: callObj.created_at,
+          },
+        ])
+        .select()
+        .single();
+      if (error) {
+        console.log('[KEIZ Call INSERT error]', error);
+        emitSupabaseError('Gagal nyambungin Call ke Supabase!');
+      } else if (data && data.id !== undefined && data.id !== null) {
+        callObj.id = String(data.id);
+      }
     } catch {
       emitSupabaseError('Gagal nyambungin Call ke Supabase!');
     }
   }
+  localChannel?.postMessage({ type: 'call_update', payload: callObj });
   return callObj;
 }
 
@@ -2411,7 +3319,6 @@ export async function addUnekItem(item: {
         .from('unek_unek_keiz')
         .insert([
           {
-            id: newItem.id,
             author: toDbUserName(item.author),
             isi: item.text,
             is_anonymous: Boolean(item.is_anonymous ?? false),
@@ -2421,9 +3328,10 @@ export async function addUnekItem(item: {
         .select()
         .single();
       if (error) {
+        console.log('[KEIZ Unek INSERT error]', error);
         emitSupabaseError('Gagal kirim unek-unek ke Supabase!');
-      } else if (data) {
-        newItem.id = String(data.id ?? newItem.id);
+      } else if (data && data.id !== undefined && data.id !== null) {
+        newItem.id = String(data.id);
       }
     } catch {
       emitSupabaseError('Gagal kirim unek-unek ke Supabase!');
@@ -2472,17 +3380,21 @@ export function subscribeRealtime(callbacks: {
   onChat?: () => void;
   onLagu?: () => void;
   onNobar?: () => void;
+  onMusic?: () => void;
   onUnek?: () => void;
   onProfil?: () => void;
   onPostingan?: () => void;
+  onAlbum?: () => void;
 }): () => void {
   const handleChannel = (ev: MessageEvent) => {
     if (ev.data?.type === 'chat_update') callbacks.onChat?.();
     if (ev.data?.type === 'lagu_update') callbacks.onLagu?.();
-    if (ev.data?.type === 'nobar_sync_update') callbacks.onNobar?.();
+    if (ev.data?.type === 'keiz_nobar_sync_update') callbacks.onNobar?.();
+    if (ev.data?.type === 'keiz_music_sync_update') callbacks.onMusic?.();
     if (ev.data?.type === 'unek_update') callbacks.onUnek?.();
     if (ev.data?.type === 'profil_update') callbacks.onProfil?.();
     if (ev.data?.type === 'postingan_update') callbacks.onPostingan?.();
+    if (ev.data?.type === 'album_update') callbacks.onAlbum?.();
   };
   localChannel?.addEventListener('message', handleChannel);
 
@@ -2496,12 +3408,14 @@ export function subscribeRealtime(callbacks: {
     if (!sb) return;
     sbChannel = sb
       .channel(`keiz-bucin-rt-${Math.random().toString(36).slice(2, 6)}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'chat' }, () => callbacks.onChat?.())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'keiz_chat' }, () => callbacks.onChat?.())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'lagu_keiz' }, () => callbacks.onLagu?.())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'nobar_sync' }, () => callbacks.onNobar?.())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'keiz_nobar_sync' }, () => callbacks.onNobar?.())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'keiz_music_sync' }, () => callbacks.onMusic?.())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'unek_unek_keiz' }, () => callbacks.onUnek?.())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'users_keiz' }, () => callbacks.onProfil?.())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'postingan_keiz' }, () => callbacks.onPostingan?.())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'keiz_album' }, () => callbacks.onAlbum?.())
       .subscribe();
   };
 

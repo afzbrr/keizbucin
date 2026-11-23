@@ -14,6 +14,7 @@ import {
   clearNobarSync,
   fetchChats,
   fetchNobarSync,
+  isPresenceOnline,
   parseYouTubeUrl,
   sendChatMessage,
   subscribeChatRealtime,
@@ -51,10 +52,30 @@ function computeTargetTime(state: NobarSyncState): number {
   return base + elapsed * (state.playback_rate || 1);
 }
 
+async function fetchYouTubeVideoTitle(videoId: string): Promise<string> {
+  try {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), 1600);
+    const res = await fetch(
+      `https://www.youtube.com/oembed?url=${encodeURIComponent(
+        `https://www.youtube.com/watch?v=${videoId}`
+      )}&format=json`,
+      { signal: controller.signal }
+    );
+    window.clearTimeout(timer);
+    if (!res.ok) return '';
+    const json = (await res.json()) as { title?: string };
+    return typeof json.title === 'string' ? json.title.trim() : '';
+  } catch {
+    return '';
+  }
+}
+
 interface NobarViewProps {
   currentUser: Role;
   profile: CoupleProfile;
   partnerPresence: PresenceState | null;
+  joinSignal?: number;
   onActiveTitleChange?: (title: string) => void;
   onBack: () => void;
   onBoostLove: () => void;
@@ -64,6 +85,7 @@ export const NobarView: React.FC<NobarViewProps> = ({
   currentUser,
   profile,
   partnerPresence,
+  joinSignal,
   onActiveTitleChange,
   onBack,
   onBoostLove,
@@ -103,10 +125,10 @@ export const NobarView: React.FC<NobarViewProps> = ({
   const partnerPhoto =
     partnerRole === 'kenat' ? profile.kenatPhoto : profile.faizPhoto;
 
+  const partnerOnline = isPresenceOnline(partnerPresence);
   const partnerInNobar =
     roomMembers.includes(partnerRole) ||
-    (partnerPresence?.status === 'online' &&
-      partnerPresence.lagi_ngapain === 'di Nobar');
+    (partnerOnline && partnerPresence?.lagi_ngapain === 'di Nobar');
 
   const showToastMsg = (msg: string) => {
     setToast(msg);
@@ -204,7 +226,12 @@ export const NobarView: React.FC<NobarViewProps> = ({
 
   useEffect(() => {
     fetchNobarSync().then((initial) => {
-      if (initial) applyRemoteNobarState(initial, true);
+      if (initial) {
+        applyRemoteNobarState(initial, true);
+        if (joinSignal && joinSignal > 0) {
+          showToastMsg(`Gabung nobar bareng ${partnerName} 🎬`);
+        }
+      }
     });
     fetchChats().then((list) => setChats(list.filter((c) => !c.is_deleted)));
 
@@ -215,6 +242,26 @@ export const NobarView: React.FC<NobarViewProps> = ({
       },
       (members) => setRoomMembers(members)
     );
+
+    // 3-second DB polling fallback so join/sync works even if Postgres Realtime is off
+    const pollTimer = window.setInterval(() => {
+      fetchNobarSync().then((fresh) => {
+        const cur = nobarRef.current;
+        if (!fresh) {
+          if (cur) applyRemoteNobarState(null, true);
+          return;
+        }
+        const playerCur = ytPlayerRef.current?.getCurrentTime?.() ?? 0;
+        const targetCur = computeTargetTime(fresh);
+        const videoChanged = !cur || cur.videoId !== fresh.videoId;
+        const playChanged = !cur || cur.is_playing !== fresh.is_playing;
+        const partnerUpdated = fresh.updated_by !== currentUser;
+        const drifted = partnerUpdated && Math.abs(playerCur - targetCur) > 3.5;
+        if (videoChanged || playChanged || drifted) {
+          applyRemoteNobarState(fresh, videoChanged || playChanged);
+        }
+      });
+    }, 3000);
 
     const unsubChat = subscribeChatRealtime(
       (msg) => {
@@ -234,10 +281,11 @@ export const NobarView: React.FC<NobarViewProps> = ({
     );
 
     return () => {
+      window.clearInterval(pollTimer);
       unsubNobar();
       unsubChat();
     };
-  }, [currentUser]);
+  }, [currentUser, joinSignal]);
 
   // Initialize YouTube IFrame API when videoId becomes active
   useEffect(() => {
@@ -290,16 +338,23 @@ export const NobarView: React.FC<NobarViewProps> = ({
                 if (st.is_playing) {
                   ev.target.loadVideoById(st.videoId, catchup);
                   ev.target.playVideo();
+                  setTimeout(() => {
+                    try {
+                      const pState = ev.target.getPlayerState?.();
+                      if (pState !== 1 && pState !== 3) {
+                        ev.target.mute?.();
+                        ev.target.playVideo();
+                        setNeedsUnmute(true);
+                      } else {
+                        setNeedsUnmute(ev.target.isMuted?.() ?? false);
+                      }
+                    } catch {
+                      // ignore
+                    }
+                  }, 550);
                 } else {
                   ev.target.cueVideoById(st.videoId, catchup);
                 }
-                setTimeout(() => {
-                  try {
-                    setNeedsUnmute(ev.target.isMuted?.() ?? false);
-                  } catch {
-                    // ignore
-                  }
-                }, 450);
               } catch {
                 // ignore
               }
@@ -430,10 +485,11 @@ export const NobarView: React.FC<NobarViewProps> = ({
     }
 
     soundFX.playHeartBurst();
+    const resolvedTitle = await fetchYouTubeVideoTitle(parsed.videoId);
     const next = await upsertNobarSync({
       youtube_url: parsed.url,
       videoId: parsed.videoId,
-      title: `Nobar YouTube (${parsed.videoId})`,
+      title: resolvedTitle || `Video YouTube (${parsed.videoId})`,
       is_playing: true,
       current_time: 0,
       playback_rate: 1,
@@ -543,6 +599,28 @@ export const NobarView: React.FC<NobarViewProps> = ({
     }
   };
 
+  const handleSyncToPartner = async () => {
+    soundFX.playPop();
+    const latest = await fetchNobarSync();
+    if (!latest) return;
+    applyRemoteNobarState(latest, true);
+    const player = ytPlayerRef.current;
+    if (player && ytReadyRef.current) {
+      try {
+        player.unMute();
+        player.setVolume(100);
+        player.seekTo(computeTargetTime(latest), true);
+        if (latest.is_playing) {
+          player.playVideo();
+        }
+        setNeedsUnmute(false);
+      } catch {
+        // ignore
+      }
+    }
+    showToastMsg(`Udah sinkron sama ${partnerName} 🎬`);
+  };
+
   const handleChangeLink = async () => {
     soundFX.playClick();
     await clearNobarSync();
@@ -626,16 +704,22 @@ export const NobarView: React.FC<NobarViewProps> = ({
             />
             <span
               className={`absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border border-white ${
-                partnerInNobar ? 'bg-emerald-500' : 'bg-slate-300'
+                partnerInNobar
+                  ? 'bg-emerald-500'
+                  : partnerOnline
+                  ? 'bg-emerald-400'
+                  : 'bg-slate-300'
               }`}
             />
           </div>
           <span className="max-w-[125px] truncate text-[10px] font-extrabold text-[#2D0A1E]">
-            {!partnerInNobar
-              ? `${partnerName} keluar dari Nobar`
-              : isPlaying
-              ? `${partnerName} nonton 🟢`
-              : `${partnerName} lagi Pause ⏸`}
+            {partnerInNobar
+              ? isPlaying
+                ? `${partnerName} nonton 🟢`
+                : `${partnerName} di Nobar ⏸`
+              : partnerOnline
+              ? `${partnerName} ${partnerPresence?.lagi_ngapain || 'online'}`
+              : `${partnerName} offline`}
           </span>
         </div>
       </div>
@@ -722,15 +806,25 @@ export const NobarView: React.FC<NobarViewProps> = ({
             <div ref={ytHostRef} className="h-full w-full" />
           </div>
 
-          {needsUnmute && (
-            <div className="flex justify-center bg-[#FFF2F7] py-2">
+          {(needsUnmute || (nobar.is_playing && !isPlaying) || (partnerInNobar && nobar.updated_by === partnerRole)) && (
+            <div className="flex flex-wrap items-center justify-center gap-2 bg-[#FFF2F7] px-3 py-2">
+              {needsUnmute && (
+                <button
+                  type="button"
+                  onClick={handleForceUnmute}
+                  className="btn-bucin inline-flex items-center gap-1.5 rounded-full bg-[#FF2E7E] px-4 py-1.5 text-xs font-extrabold text-white shadow cursor-pointer"
+                >
+                  <Volume2 className="h-3.5 w-3.5" />
+                  <span>Nyalakan Suara Nobar</span>
+                </button>
+              )}
               <button
                 type="button"
-                onClick={handleForceUnmute}
-                className="btn-bucin inline-flex items-center gap-1.5 rounded-full bg-[#FF2E7E] px-4 py-1.5 text-xs font-extrabold text-white shadow cursor-pointer"
+                onClick={handleSyncToPartner}
+                className="btn-bucin inline-flex items-center gap-1.5 rounded-full border border-[#FFD6E7] bg-white px-3.5 py-1.5 text-xs font-extrabold text-[#D81B6E] shadow-sm cursor-pointer"
               >
-                <Volume2 className="h-3.5 w-3.5" />
-                <span>Nyalakan Suara Nobar</span>
+                <RefreshCw className="h-3.5 w-3.5" />
+                <span>Sync ke {partnerName}</span>
               </button>
             </div>
           )}

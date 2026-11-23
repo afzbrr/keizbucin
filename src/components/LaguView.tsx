@@ -13,7 +13,7 @@ import {
   X,
   Youtube,
 } from 'lucide-react';
-import { sendChatMessage } from '../supabaseClient';
+import { isPresenceOnline, sendChatMessage } from '../supabaseClient';
 import { soundFX } from '../sound';
 import type {
   CoupleProfile,
@@ -112,10 +112,12 @@ export const LaguView: React.FC<LaguViewProps> = ({
   const partnerPhoto =
     partnerRole === 'kenat' ? profile.kenatPhoto : profile.faizPhoto;
 
+  const partnerOnline = isPresenceOnline(partnerPresence);
   const partnerInMusic =
     musicRoomMembers.includes(partnerRole) ||
-    (partnerPresence?.status === 'online' &&
-      partnerPresence.lagi_ngapain === 'di Musik');
+    (partnerOnline &&
+      (partnerPresence?.lagi_ngapain === 'di Musik' ||
+        partnerPresence?.lagi_play_apa?.startsWith('🎵 ')));
 
   // iTunes Search API ONLY for cover, title, artist & real full duration
   useEffect(() => {
@@ -254,16 +256,22 @@ export const LaguView: React.FC<LaguViewProps> = ({
             />
             <span
               className={`absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border border-white ${
-                partnerInMusic ? 'bg-emerald-500' : 'bg-slate-300'
+                partnerInMusic
+                  ? 'bg-emerald-500'
+                  : partnerOnline
+                  ? 'bg-emerald-400'
+                  : 'bg-slate-300'
               }`}
             />
           </div>
-          <span className="max-w-[120px] truncate text-[10px] font-extrabold text-[#2D0A1E]">
+          <span className="max-w-[125px] truncate text-[10px] font-extrabold text-[#2D0A1E]">
             {partnerInMusic
-              ? isPlaying
+              ? isPlaying || partnerPresence?.lagi_play_apa?.startsWith('🎵 ')
                 ? `${partnerName} dengerin 🟢`
                 : `${partnerName} di Musik`
-              : `${partnerName} lagi di luar`}
+              : partnerOnline
+              ? `${partnerName} ${partnerPresence?.lagi_ngapain || 'online'}`
+              : `${partnerName} offline`}
           </span>
         </div>
       </div>
