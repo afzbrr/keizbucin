@@ -1,10 +1,11 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   AlertCircle,
   ArrowLeft,
   Camera,
   ImagePlus,
   Loader2,
+  RotateCcw,
   Trash2,
   Upload,
   X,
@@ -18,29 +19,24 @@ import {
 import { soundFX } from '../sound';
 import type { GalleryPhoto, Role } from '../types';
 
-async function prepareImageForUpload(
-  file: File,
-  maxDim = 1280
-): Promise<{ blob: Blob; fallbackDataUrl: string }> {
-  const dataUrl = await new Promise<string>((resolve) => {
-    const reader = new FileReader();
-    reader.onload = () =>
-      resolve(typeof reader.result === 'string' ? reader.result : '');
-    reader.onerror = () => resolve('');
-    reader.readAsDataURL(file);
-  });
-
-  // Pertahankan file asli jika GIF/SVG/WebP kecil atau FileReader gagal
+async function prepareImageForUpload(file: File, maxDim = 1280): Promise<Blob> {
   if (
-    !dataUrl ||
     file.type === 'image/svg+xml' ||
     file.type === 'image/gif' ||
     file.size <= 350 * 1024
   ) {
-    return { blob: file, fallbackDataUrl: dataUrl };
+    return file;
   }
 
-  return new Promise<{ blob: Blob; fallbackDataUrl: string }>((resolve) => {
+  return new Promise<Blob>((resolve) => {
+    let objectUrl = '';
+    try {
+      objectUrl = URL.createObjectURL(file);
+    } catch {
+      resolve(file);
+      return;
+    }
+
     const img = new Image();
     img.onload = () => {
       try {
@@ -52,28 +48,29 @@ async function prepareImageForUpload(
         canvas.height = h;
         const ctx = canvas.getContext('2d');
         if (!ctx) {
-          resolve({ blob: file, fallbackDataUrl: dataUrl });
+          URL.revokeObjectURL(objectUrl);
+          resolve(file);
           return;
         }
         ctx.drawImage(img, 0, 0, w, h);
-        const compressedUrl = canvas.toDataURL('image/jpeg', 0.82);
         canvas.toBlob(
           (blob) => {
-            if (blob && blob.size > 0) {
-              resolve({ blob, fallbackDataUrl: compressedUrl });
-            } else {
-              resolve({ blob: file, fallbackDataUrl: dataUrl });
-            }
+            URL.revokeObjectURL(objectUrl);
+            resolve(blob && blob.size > 0 ? blob : file);
           },
           'image/jpeg',
-          0.82
+          0.84
         );
       } catch {
-        resolve({ blob: file, fallbackDataUrl: dataUrl });
+        URL.revokeObjectURL(objectUrl);
+        resolve(file);
       }
     };
-    img.onerror = () => resolve({ blob: file, fallbackDataUrl: dataUrl });
-    img.src = dataUrl;
+    img.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      resolve(file);
+    };
+    img.src = objectUrl;
   });
 }
 
@@ -92,8 +89,8 @@ export const GaleriView: React.FC<GaleriViewProps> = ({ currentUser, onBack }) =
   const [uploading, setUploading] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [permissionHelp, setPermissionHelp] = useState(false);
   const [failedIds, setFailedIds] = useState<Record<string, boolean>>({});
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const loadPosts = async () => {
     try {
@@ -120,7 +117,6 @@ export const GaleriView: React.FC<GaleriViewProps> = ({ currentUser, onBack }) =
     };
   }, []);
 
-  // Bersihkan object URL preview saat diganti / unmount
   useEffect(() => {
     return () => {
       if (previewUrl && previewUrl.startsWith('blob:')) {
@@ -129,20 +125,18 @@ export const GaleriView: React.FC<GaleriViewProps> = ({ currentUser, onBack }) =
     };
   }, [previewUrl]);
 
-  const openGalleryPicker = () => {
-    soundFX.playClick();
-    if (uploading) return;
-    setUploadError(null);
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
-      fileInputRef.current.click();
-    }
-  };
-
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    e.currentTarget.value = '';
     if (!file) return;
 
+    if (file.size === 0) {
+      setPermissionHelp(true);
+      setUploadError('izinin akses foto dulu di Pengaturan HP > KEIZ BUCIN > Foto > Izinkan');
+      return;
+    }
+
+    setPermissionHelp(false);
     setUploadError(null);
     setPendingFile(file);
 
@@ -156,6 +150,10 @@ export const GaleriView: React.FC<GaleriViewProps> = ({ currentUser, onBack }) =
           setPreviewUrl(reader.result);
         }
       };
+      reader.onerror = () => {
+        setPermissionHelp(true);
+        setUploadError('izinin akses foto dulu di Pengaturan HP > KEIZ BUCIN > Foto > Izinkan');
+      };
       reader.readAsDataURL(file);
     }
   };
@@ -164,9 +162,8 @@ export const GaleriView: React.FC<GaleriViewProps> = ({ currentUser, onBack }) =
     if (uploading) return;
     setPendingFile(null);
     setPreviewUrl(null);
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
-    }
+    setUploadError(null);
+    setPermissionHelp(false);
   };
 
   const handleConfirmUpload = async () => {
@@ -174,20 +171,20 @@ export const GaleriView: React.FC<GaleriViewProps> = ({ currentUser, onBack }) =
     soundFX.playClick();
     setUploading(true);
     setUploadError(null);
+    setPermissionHelp(false);
 
     try {
-      const { blob, fallbackDataUrl } = await prepareImageForUpload(pendingFile, 1280);
+      const blob = await prepareImageForUpload(pendingFile, 1280);
       const saved = await addAlbumPhoto({
         author: currentUser,
         caption: captionInput.trim(),
         file: blob,
         fileName: pendingFile.name,
-        fallbackDataUrl: fallbackDataUrl || previewUrl || '',
       });
 
       if (saved.failed) {
         const errText =
-          saved.errorDetails || 'Gagal upload foto ke keiz_album, coba lagi ya.';
+          saved.errorDetails || 'Gagal upload foto ke Supabase, coba lagi ya.';
         setUploadError(errText);
         return;
       }
@@ -197,14 +194,16 @@ export const GaleriView: React.FC<GaleriViewProps> = ({ currentUser, onBack }) =
       setCaptionInput('');
       setPendingFile(null);
       setPreviewUrl(null);
-      if (fileInputRef.current) {
-        fileInputRef.current.value = '';
-      }
       await loadPosts();
     } catch (err) {
       const msg =
-        err instanceof Error ? err.message : 'Gagal membaca/upload foto ke Supabase.';
-      setUploadError(msg);
+        err instanceof Error ? err.message : 'Gagal membaca atau upload foto ke Supabase.';
+      if (/permission|notallowed|denied/i.test(msg)) {
+        setPermissionHelp(true);
+        setUploadError('izinin akses foto dulu di Pengaturan HP > KEIZ BUCIN > Foto > Izinkan');
+      } else {
+        setUploadError(msg);
+      }
     } finally {
       setUploading(false);
     }
@@ -230,13 +229,14 @@ export const GaleriView: React.FC<GaleriViewProps> = ({ currentUser, onBack }) =
   };
 
   return (
-    <div className="animate-slide-in-right flex flex-col gap-4 pb-3">
-      <div className="flex items-center gap-2.5">
+    <div className="animate-slide-in-right flex flex-col gap-3.5 pb-3">
+      {/* Sticky Header */}
+      <div className="sticky top-0 z-20 -mx-4 flex items-center gap-2.5 bg-[#FFF2F7]/95 px-4 py-2 backdrop-blur-sm">
         <button
           type="button"
           onClick={onBack}
           aria-label="Kembali"
-          className="btn-bucin flex h-10 w-10 items-center justify-center rounded-full border border-[#FFD6E7] bg-white text-[#2D0A1E] cursor-pointer"
+          className="btn-bucin flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-[#FFD6E7] bg-white text-[#2D0A1E] cursor-pointer"
         >
           <ArrowLeft className="h-5 w-5" />
         </button>
@@ -250,16 +250,7 @@ export const GaleriView: React.FC<GaleriViewProps> = ({ currentUser, onBack }) =
         </div>
       </div>
 
-      {/* Hidden File Input (triggered via button onClick -> ref.click()) */}
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept="image/*"
-        onChange={handleFileSelect}
-        className="hidden"
-      />
-
-      {/* Add Photo Bar + Preview */}
+      {/* Add Photo Bar + Preview (Native <label> wrapping <input type="file"> so PWA & mobile WebView always open gallery) */}
       <div className="keiz-sticker-card bg-white p-3.5">
         <div className="flex items-center gap-2">
           <input
@@ -270,16 +261,27 @@ export const GaleriView: React.FC<GaleriViewProps> = ({ currentUser, onBack }) =
             disabled={uploading}
             className="min-h-[42px] flex-1 rounded-full border border-[#FFD6E7] bg-[#FFF2F7] px-3.5 text-xs font-medium text-[#2D0A1E] placeholder-[#9A7A8A] focus:outline-none disabled:opacity-60"
           />
-          <button
-            type="button"
-            onClick={openGalleryPicker}
-            disabled={uploading}
-            className="btn-bucin flex min-h-[42px] shrink-0 items-center gap-1.5 rounded-full bg-gradient-to-r from-[#FF2E7E] to-[#FF7AB8] px-4 text-xs font-extrabold text-white shadow-sm cursor-pointer select-none disabled:opacity-75"
+          <label
+            onClick={() => {
+              soundFX.playClick();
+              setUploadError(null);
+            }}
+            className={`btn-bucin relative flex min-h-[42px] shrink-0 items-center gap-1.5 overflow-hidden rounded-full bg-gradient-to-r from-[#FF2E7E] to-[#FF7AB8] px-4 text-xs font-extrabold text-white shadow-sm select-none ${
+              uploading ? 'pointer-events-none opacity-75' : 'cursor-pointer'
+            }`}
           >
+            <input
+              type="file"
+              accept="image/*"
+              disabled={uploading}
+              onChange={handleFileSelect}
+              aria-label="Pilih foto dari galeri"
+              className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+            />
             {uploading ? (
               <>
                 <Loader2 className="h-4 w-4 animate-spin" />
-                <span>Lagi upload...</span>
+                <span>lagi upload...</span>
               </>
             ) : (
               <>
@@ -287,7 +289,7 @@ export const GaleriView: React.FC<GaleriViewProps> = ({ currentUser, onBack }) =
                 <span>{pendingFile ? 'Ganti' : 'Tambah'}</span>
               </>
             )}
-          </button>
+          </label>
         </div>
 
         {/* Preview Foto Sebelum Upload */}
@@ -335,7 +337,7 @@ export const GaleriView: React.FC<GaleriViewProps> = ({ currentUser, onBack }) =
                   {uploading ? (
                     <>
                       <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                      <span>Lagi upload...</span>
+                      <span>lagi upload...</span>
                     </>
                   ) : (
                     <>
@@ -349,24 +351,54 @@ export const GaleriView: React.FC<GaleriViewProps> = ({ currentUser, onBack }) =
           </div>
         )}
 
-        {/* Alert Error Asli dari Supabase */}
+        {/* Alert Error Asli + Tombol Coba Lagi */}
         {uploadError && (
           <div
             role="alert"
-            className="mt-2.5 flex items-start justify-between gap-2 rounded-xl border border-rose-300 bg-rose-50 px-3 py-2.5 text-[11px] font-bold text-rose-700"
+            className="mt-2.5 flex flex-col gap-2 rounded-xl border border-rose-300 bg-rose-50 px-3 py-2.5 text-[11px] font-bold text-rose-700"
           >
-            <div className="flex items-start gap-2 min-w-0">
-              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-rose-600" />
-              <span className="break-all leading-relaxed">{uploadError}</span>
+            <div className="flex items-start justify-between gap-2">
+              <div className="flex min-w-0 items-start gap-2">
+                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-rose-600" />
+                <span className="break-words leading-relaxed">{uploadError}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setUploadError(null);
+                  setPermissionHelp(false);
+                }}
+                className="shrink-0 text-rose-500 cursor-pointer"
+                aria-label="Tutup error upload"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
             </div>
-            <button
-              type="button"
-              onClick={() => setUploadError(null)}
-              className="shrink-0 text-rose-500 cursor-pointer"
-              aria-label="Tutup error upload"
-            >
-              <X className="h-3.5 w-3.5" />
-            </button>
+            <div className="flex flex-wrap items-center gap-2">
+              {pendingFile && !permissionHelp ? (
+                <button
+                  type="button"
+                  onClick={handleConfirmUpload}
+                  disabled={uploading}
+                  className="inline-flex items-center gap-1 rounded-full bg-rose-600 px-3 py-1 text-[10px] font-extrabold text-white cursor-pointer disabled:opacity-60"
+                >
+                  <RotateCcw className="h-3 w-3" />
+                  <span>coba lagi</span>
+                </button>
+              ) : (
+                <label className="relative inline-flex cursor-pointer items-center gap-1 overflow-hidden rounded-full bg-rose-600 px-3 py-1 text-[10px] font-extrabold text-white">
+                  <input
+                    type="file"
+                    accept="image/*"
+                    disabled={uploading}
+                    onChange={handleFileSelect}
+                    className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+                  />
+                  <RotateCcw className="h-3 w-3" />
+                  <span>coba lagi</span>
+                </label>
+              )}
+            </div>
           </div>
         )}
       </div>
@@ -387,21 +419,32 @@ export const GaleriView: React.FC<GaleriViewProps> = ({ currentUser, onBack }) =
           <p className="mt-3 text-xs font-extrabold text-[#5C3A49]">
             Belum ada foto kita, yuk upload foto pertama
           </p>
-          <button
-            type="button"
-            onClick={openGalleryPicker}
-            disabled={uploading}
-            className="keiz-btn-primary btn-bucin mt-3 inline-flex min-h-[44px] items-center justify-center gap-1.5 px-6 text-xs cursor-pointer select-none disabled:opacity-75"
+          <label
+            onClick={() => {
+              soundFX.playClick();
+              setUploadError(null);
+            }}
+            className={`keiz-btn-primary btn-bucin relative mt-3 inline-flex min-h-[44px] items-center justify-center gap-1.5 overflow-hidden px-6 text-xs select-none ${
+              uploading ? 'pointer-events-none opacity-75' : 'cursor-pointer'
+            }`}
           >
+            <input
+              type="file"
+              accept="image/*"
+              disabled={uploading}
+              onChange={handleFileSelect}
+              aria-label="Upload foto pertama"
+              className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+            />
             {uploading ? (
               <>
                 <Loader2 className="h-4 w-4 animate-spin" />
-                <span>Lagi upload...</span>
+                <span>lagi upload...</span>
               </>
             ) : (
               <span>Upload Foto Pertama</span>
             )}
-          </button>
+          </label>
         </div>
       ) : (
         <div className="grid grid-cols-2 gap-3.5 pt-1">
@@ -482,7 +525,7 @@ export const GaleriView: React.FC<GaleriViewProps> = ({ currentUser, onBack }) =
             <img
               src={selected.url}
               alt={selected.caption || 'Foto Album KEIZ'}
-              className="max-h-[60vh] w-full rounded-2xl object-cover"
+              className="max-h-[60dvh] w-full rounded-2xl object-cover"
             />
             <div className="flex items-center justify-between px-2 pb-1 pt-3">
               <div>

@@ -719,7 +719,7 @@ export default function App() {
   };
 
   return (
-    <div className="paper-texture relative h-dvh min-h-dvh w-full overflow-hidden bg-gradient-to-b from-[#FFF2F7] to-[#FFE4EF] text-[#2D0A1E]">
+    <div className="paper-texture relative flex h-dvh w-full flex-col overflow-hidden bg-gradient-to-b from-[#FFF2F7] to-[#FFE4EF] text-[#2D0A1E]">
       {/* Persistent Global Audio + 1x1 Hidden YouTube Music Player (never unmounts across pages!) */}
       {currentUser && (
         <>
@@ -915,7 +915,7 @@ export default function App() {
 
       {/* SETUP SUPABASE WHEN NEITHER MANUAL ENV NOR VERCEL ENV IS FILLED */}
       {!supabaseReady ? (
-        <div className="relative z-10 mx-auto flex min-h-screen w-full max-w-[430px] flex-col justify-center gap-4 px-4 py-8">
+        <div className="relative z-10 mx-auto flex min-h-dvh w-full max-w-md flex-col justify-center gap-4 overflow-y-auto px-4 py-6">
           <div className="keiz-card space-y-3 border border-[#FFD6E7] bg-white/95 p-5">
             <div className="flex items-center gap-2.5">
               <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border border-[#FFD6E7] bg-[#FFE3EE]">
@@ -941,16 +941,18 @@ export default function App() {
           <SupabaseConfigCard onConnected={() => setSupabaseReady(true)} />
         </div>
       ) : !currentUser ? (
-        <LoginView profile={profile} onSuccess={handleLoginSuccess} />
+        <div className="relative z-10 min-h-0 flex-1 overflow-y-auto">
+          <LoginView profile={profile} onSuccess={handleLoginSuccess} />
+        </div>
       ) : (
-        /* MAIN FULL-HEIGHT CONTAINER MAX 430PX */
+        /* MAIN FULL-HEIGHT CONTAINER MAX-W-MD (IDENTICAL ON WEB & PWA) */
         <div
-          className={`relative z-10 mx-auto flex h-dvh min-h-dvh w-full max-w-[430px] flex-col overflow-hidden ${
+          className={`relative z-10 mx-auto flex h-dvh w-full max-w-md flex-1 flex-col overflow-hidden pt-[env(safe-area-inset-top)] ${
             pelukActive ? 'animate-screen-shake' : ''
           }`}
         >
           {section === 'chat' ? (
-            <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-3 pt-2.5 pb-1">
+            <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-3 pt-2 pb-1">
               <ChatView
                 profile={profile}
                 currentUser={currentUser}
@@ -1399,8 +1401,8 @@ export default function App() {
             </div>
           )}
 
-          {/* Docked Bottom Stack (Mini Player + Sticky 5-Tab Bottom Nav) */}
-          <div className="flex shrink-0 flex-col gap-2 px-3 pt-1 pb-2.5">
+          {/* Docked Bottom Stack (Mini Player + Sticky 5-Tab Bottom Nav with safe-area bottom inset) */}
+          <div className="sticky bottom-0 z-20 flex shrink-0 flex-col gap-2 px-3 pt-1 pb-[max(0.625rem,env(safe-area-inset-bottom))]">
             {section === 'lagu' && music.isPlaying && music.activeSong && (
               <div
                 onClick={() => openSection('lagu')}
@@ -1505,7 +1507,7 @@ export default function App() {
         >
           <div
             onClick={(e) => e.stopPropagation()}
-            className="keiz-card animate-bubble-pop max-h-[88vh] w-full max-w-[395px] space-y-3 overflow-y-auto bg-white p-5"
+            className="keiz-card animate-bubble-pop max-h-[88dvh] w-full max-w-[395px] space-y-3 overflow-y-auto bg-white p-5"
           >
             <div className="flex items-center justify-between">
               <h3 className="font-display text-base font-extrabold text-[#2D0A1E]">

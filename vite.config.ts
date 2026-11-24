@@ -11,7 +11,7 @@ function ytSearchDevPlugin(): Plugin {
     configureServer(server) {
       server.middlewares.use('/api/yt-search', async (req, res, next) => {
         try {
-          const url = new URL(req.url || '/', 'http://localhost:3000');
+          const url = new URL(req.url || '/', 'https://keiz-bucin.local');
           const q = (url.searchParams.get('q') || '').trim();
           if (!q) {
             res.statusCode = 400;
@@ -67,12 +67,12 @@ export default defineConfig(() => {
           id: '/',
           name: 'KEIZ BUCIN',
           short_name: 'KEIZ BUCIN',
-          description: 'KEIZ BUCIN — ruang berdua buat Faiz & Kenat.',
+          description: 'KEIZ BUCIN — ruang berdua buat faiz & kenat.',
           start_url: '/',
           scope: '/',
           display: 'standalone',
           orientation: 'portrait',
-          theme_color: '#FF2E7E',
+          theme_color: '#ff5e8a',
           background_color: '#FFF2F7',
           icons: [
             {
@@ -95,9 +95,45 @@ export default defineConfig(() => {
         },
         workbox: {
           maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
-          globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
-          navigateFallback: '/index.html',
-          navigateFallbackDenylist: [/^\/api\//],
+          skipWaiting: true,
+          clientsClaim: true,
+          cleanupOutdatedCaches: true,
+          globPatterns: ['assets/**/*.{js,css}', '*.{ico,png,svg,woff2}'],
+          globIgnores: ['**/index.html'],
+          navigateFallback: null,
+          runtimeCaching: [
+            {
+              urlPattern: ({ request, url }) =>
+                request.mode === 'navigate' ||
+                url.pathname === '/' ||
+                url.pathname === '/index.html',
+              handler: 'NetworkFirst',
+              options: {
+                cacheName: 'keiz-html-network-first',
+                networkTimeoutSeconds: 4,
+                cacheableResponse: {
+                  statuses: [0, 200],
+                },
+                fetchOptions: {
+                  cache: 'no-store',
+                },
+              },
+            },
+            {
+              urlPattern: ({ url }) => url.pathname.startsWith('/assets/'),
+              handler: 'CacheFirst',
+              options: {
+                cacheName: 'keiz-hashed-assets',
+                expiration: {
+                  maxEntries: 80,
+                  maxAgeSeconds: 31536000,
+                },
+                cacheableResponse: {
+                  statuses: [0, 200],
+                },
+              },
+            },
+          ],
         },
         devOptions: {
           enabled: true,

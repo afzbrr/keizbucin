@@ -78,7 +78,7 @@ export const LoginView: React.FC<LoginViewProps> = ({ profile, onSuccess }) => {
   };
 
   return (
-    <div className="relative z-10 mx-auto flex min-h-screen w-full max-w-[430px] flex-col items-center justify-center px-4 py-8">
+    <div className="relative z-10 mx-auto flex min-h-dvh w-full max-w-md flex-col items-center justify-center px-4 py-6">
       {/* Error Toast */}
       {errorToast && (
         <div className="animate-bubble-pop fixed top-6 z-40 rounded-full border border-rose-200 bg-white px-4 py-2 text-xs font-extrabold text-rose-600 shadow-lg">

@@ -1136,59 +1136,145 @@ export async function deletePostingan(id: string): Promise<void> {
   localChannel?.postMessage({ type: 'postingan_update' });
 }
 
+// ---------- SHARED SUPABASE STORAGE IMAGE UPLOAD ----------
+const PRIMARY_PHOTO_BUCKET = 'keiz-album';
+const FALLBACK_PHOTO_BUCKET = 'keiz_photos';
+
+export async function uploadImageToKeizStorage(
+  file: Blob,
+  fileName: string,
+  author: Role,
+  folder = ''
+): Promise<{ publicUrl: string | null; bucket: string; error?: string }> {
+  const sb = activeClient;
+  if (!sb) {
+    return {
+      publicUrl: null,
+      bucket: PRIMARY_PHOTO_BUCKET,
+      error: 'Supabase belum terhubung. Cek URL & Anon Key Supabase dulu ya.',
+    };
+  }
+
+  const rawName = (fileName || 'foto.jpg').trim();
+  const safeName = rawName.replace(/[^a-zA-Z0-9._-]/g, '_') || 'foto.jpg';
+  const cleanFolder = folder.replace(/^\/+|\/+$/g, '');
+  const baseName = `${author}_${Date.now()}_${safeName}`;
+  const objectPath = cleanFolder ? `${cleanFolder}/${baseName}` : baseName;
+
+  const bucketsToTry = [PRIMARY_PHOTO_BUCKET, FALLBACK_PHOTO_BUCKET];
+  let lastErrMsg = 'Gagal upload foto ke Supabase Storage.';
+
+  for (let i = 0; i < bucketsToTry.length; i++) {
+    const bucket = bucketsToTry[i];
+    try {
+      const { data: uploadData, error: uploadErr } = await sb.storage
+        .from(bucket)
+        .upload(objectPath, file, {
+          contentType: file.type || 'image/jpeg',
+          upsert: false,
+        });
+
+      if (!uploadErr && uploadData?.path) {
+        const { data: pub } = sb.storage.from(bucket).getPublicUrl(uploadData.path);
+        if (pub?.publicUrl && /^https?:\/\//i.test(pub.publicUrl)) {
+          return { publicUrl: pub.publicUrl, bucket };
+        }
+        return {
+          publicUrl: null,
+          bucket,
+          error: `Upload ke '${bucket}' berhasil, tapi gagal ambil public URL.`,
+        };
+      }
+
+      const errObj = uploadErr as unknown as {
+        message?: string;
+        statusCode?: string | number;
+        error?: string;
+      };
+      const rawMsg = String(errObj?.message || 'Upload gagal');
+      lastErrMsg = `Gagal upload ke bucket '${bucket}': ${rawMsg}${
+        errObj?.statusCode ? ` (status ${errObj.statusCode})` : ''
+      }`;
+
+      const isBucketMissing =
+        /bucket/i.test(rawMsg) && (/not found/i.test(rawMsg) || /does not exist/i.test(rawMsg));
+      if (isBucketMissing && i + 1 < bucketsToTry.length) {
+        continue;
+      }
+      break;
+    } catch (err) {
+      lastErrMsg = `Gagal upload ke bucket '${bucket}': ${
+        err instanceof Error ? err.message : String(err || 'Network error')
+      }`;
+      break;
+    }
+  }
+
+  return {
+    publicUrl: null,
+    bucket: PRIMARY_PHOTO_BUCKET,
+    error: lastErrMsg,
+  };
+}
+
 // ---------- ALBUM POLAROID (tabel: keiz_album + bucket: keiz-album) ----------
-const ALBUM_BUCKET = 'keiz-album';
+const ALBUM_BUCKET = PRIMARY_PHOTO_BUCKET;
 const ALBUM_TABLE = 'keiz_album';
+const ALBUM_TABLE_FALLBACK = 'keiz_albums';
 
 export async function fetchAlbumPhotos(): Promise<GalleryPhoto[]> {
   const sb = activeClient;
   if (!sb) return [];
-  try {
-    let { data, error } = await sb
-      .from(ALBUM_TABLE)
-      .select('*')
-      .order('created_at', { ascending: false })
-      .limit(120);
 
-    if (
-      error &&
-      (error.code === '42703' ||
-        error.code === 'PGRST204' ||
-        String(error.message).includes('created_at'))
-    ) {
-      const retry = await sb.from(ALBUM_TABLE).select('*').limit(120);
-      data = retry.data;
-      error = retry.error;
-    }
+  for (const table of [ALBUM_TABLE, ALBUM_TABLE_FALLBACK]) {
+    try {
+      let { data, error } = await sb
+        .from(table)
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(120);
 
-    if (error) {
-      console.warn('[KEIZ Album fetchAlbumPhotos error]', error);
-      if (error.code !== '42P01' && error.code !== 'PGRST205') {
-        void checkSupabaseConnection();
+      if (
+        error &&
+        (error.code === '42703' ||
+          error.code === 'PGRST204' ||
+          String(error.message).includes('created_at'))
+      ) {
+        const retry = await sb.from(table).select('*').limit(120);
+        data = retry.data;
+        error = retry.error;
       }
+
+      if (error) {
+        if (error.code === '42P01' || error.code === 'PGRST205') {
+          continue;
+        }
+        console.warn('[KEIZ Album fetchAlbumPhotos error]', error);
+        void checkSupabaseConnection();
+        return [];
+      }
+
+      return Array.isArray(data)
+        ? data.map((r, i) => {
+            const row = r as Record<string, unknown>;
+            const mapped = mapPostinganRow(row, i);
+            if (!mapped.url && row.public_url) {
+              mapped.url = String(row.public_url);
+            }
+            mapped.caption =
+              row.caption !== undefined && row.caption !== null
+                ? String(row.caption)
+                : mapped.caption;
+            return mapped;
+          })
+        : [];
+    } catch (err) {
+      console.warn('[KEIZ Album fetchAlbumPhotos exception]', err);
+      void checkSupabaseConnection();
       return [];
     }
-
-    return Array.isArray(data)
-      ? data.map((r, i) => {
-          const row = r as Record<string, unknown>;
-          const mapped = mapPostinganRow(row, i);
-          if (!mapped.url && row.public_url) {
-            mapped.url = String(row.public_url);
-          }
-          // Preserve exact caption from keiz_album (including empty string '')
-          mapped.caption =
-            row.caption !== undefined && row.caption !== null
-              ? String(row.caption)
-              : mapped.caption;
-          return mapped;
-        })
-      : [];
-  } catch (err) {
-    console.warn('[KEIZ Album fetchAlbumPhotos exception]', err);
-    void checkSupabaseConnection();
-    return [];
   }
+  return [];
 }
 
 export async function addAlbumPhoto(payload: {
@@ -1196,14 +1282,14 @@ export async function addAlbumPhoto(payload: {
   caption: string;
   file?: Blob | null;
   fileName?: string;
-  fallbackDataUrl: string;
+  fallbackDataUrl?: string;
 }): Promise<GalleryPhoto> {
   const createdAt = new Date().toISOString();
   const caption = payload.caption.trim();
   const tempPhoto: GalleryPhoto = {
     id: makeUuid(),
     author: payload.author,
-    url: payload.fallbackDataUrl,
+    url: '',
     caption,
     dateLabel: 'baru aja',
     tag: 'berdua',
@@ -1215,162 +1301,127 @@ export async function addAlbumPhoto(payload: {
     return {
       ...tempPhoto,
       failed: true,
-      errorDetails: 'ERROR: Supabase belum terhubung | details: client null | code: NO_CLIENT',
+      errorDetails: 'Supabase belum terhubung. Cek koneksi internet & Supabase ya.',
     };
   }
 
-  // 1. Upload file ke Storage bucket 'keiz-album' dengan nama unik Date.now() + '-' + nama_file
   if (!payload.file) {
     return {
       ...tempPhoto,
       failed: true,
-      errorDetails: "Gagal memproses file gambar sebelum upload ke bucket 'keiz-album'.",
+      errorDetails: 'Gagal membaca file foto sebelum upload. Coba pilih foto lagi ya.',
     };
   }
 
-  let finalImageUrl = '';
-  const rawName = (payload.fileName || 'foto.jpg').trim();
-  const safeName = rawName.replace(/[^a-zA-Z0-9._-]/g, '_') || 'foto.jpg';
-  const uniqueFileName = `${Date.now()}-${safeName}`;
+  // 1. Upload file ke Storage (hanya public URL https://... yang disimpan ke DB, dilarang base64/blob)
+  const uploaded = await uploadImageToKeizStorage(
+    payload.file,
+    payload.fileName || 'foto.jpg',
+    payload.author
+  );
 
-  try {
-    const { data: uploadData, error: uploadErr } = await sb.storage
-      .from(ALBUM_BUCKET)
-      .upload(uniqueFileName, payload.file, {
-        contentType: payload.file.type || 'image/jpeg',
-        upsert: false,
-      });
-
-    if (uploadErr || !uploadData?.path) {
-      const errObj = uploadErr as unknown as {
-        message?: string;
-        statusCode?: string | number;
-        error?: string;
-      };
-      const storageErrMsg = `Gagal upload ke bucket '${ALBUM_BUCKET}': ${
-        errObj?.message || 'Upload gagal'
-      }${errObj?.statusCode ? ` (status ${errObj.statusCode})` : ''}${
-        errObj?.error ? ` [${errObj.error}]` : ''
-      }`;
-      console.log('[KEIZ Album storage upload error]', uploadErr);
-      emitSupabaseError(storageErrMsg);
-      return {
-        ...tempPhoto,
-        failed: true,
-        errorDetails: storageErrMsg,
-      };
-    }
-
-    const { data: pub } = sb.storage
-      .from(ALBUM_BUCKET)
-      .getPublicUrl(uploadData.path);
-
-    if (!pub?.publicUrl) {
-      const urlErr = `Upload ke '${ALBUM_BUCKET}' berhasil, tapi gagal ambil public URL.`;
-      emitSupabaseError(urlErr);
-      return {
-        ...tempPhoto,
-        failed: true,
-        errorDetails: urlErr,
-      };
-    }
-
-    finalImageUrl = pub.publicUrl;
-  } catch (storageErr) {
-    const errMsg =
-      storageErr instanceof Error
-        ? storageErr.message
-        : String(storageErr || 'Gagal menghubungi Storage keiz-album');
-    console.log('[KEIZ Album storage exception]', storageErr);
-    emitSupabaseError(`Gagal upload ke bucket '${ALBUM_BUCKET}': ${errMsg}`);
-    return {
-      ...tempPhoto,
-      failed: true,
-      errorDetails: `Gagal upload ke bucket '${ALBUM_BUCKET}': ${errMsg}`,
-    };
-  }
-
-  // 2. Simpan { image_url, caption } ke tabel 'keiz_album' (DILARANG kirim id!)
-  try {
-    const attemptPayload: Record<string, unknown> = {
-      image_url: finalImageUrl,
-      caption,
-    };
-
-    let insertedRow: Record<string, unknown> | null = null;
-    let lastError: { message?: string; details?: string; hint?: string; code?: string } | null = null;
-
-    for (let attempt = 0; attempt < 5; attempt++) {
-      delete attemptPayload.id;
-      console.log('[KEIZ Album INSERT attempt]', JSON.stringify(attemptPayload));
-      const { data, error } = await sb
-        .from(ALBUM_TABLE)
-        .insert([attemptPayload])
-        .select()
-        .single();
-
-      if (!error && data) {
-        insertedRow = data as Record<string, unknown>;
-        lastError = null;
-        break;
-      }
-
-      lastError = error;
-      console.log('[KEIZ Album INSERT error]', error);
-      const errMsg = String(error?.message || '');
-
-      // Jika tabel punya kolom NOT NULL misalnya author, isi otomatis saat retry
-      const notNullMatch = errMsg.match(/null value in column "([^"]+)"/i);
-      if (notNullMatch?.[1] === 'author' && !('author' in attemptPayload)) {
-        attemptPayload.author = toDbUserName(payload.author);
-        continue;
-      }
-
-      const missingCol =
-        errMsg.match(/Could not find the '([^']+)' column/i) ||
-        errMsg.match(/column "([^"]+)" of relation "[^"]+" does not exist/i);
-      if (missingCol?.[1] && missingCol[1] in attemptPayload) {
-        delete attemptPayload[missingCol[1]];
-        continue;
-      }
-
-      break;
-    }
-
-    if (lastError || !insertedRow) {
-      const formattedErr = `ERROR: ${lastError?.message ?? 'Gagal simpan ke keiz_album'} | details: ${
-        lastError?.details ?? '-'
-      } | hint: ${lastError?.hint ?? '-'} | code: ${lastError?.code ?? '-'}`;
-      emitSupabaseError(formattedErr);
-      return {
-        ...tempPhoto,
-        url: finalImageUrl,
-        failed: true,
-        errorDetails: formattedErr,
-      };
-    }
-
-    const mapped = mapPostinganRow(insertedRow);
-    if (!mapped.url && insertedRow.public_url) {
-      mapped.url = String(insertedRow.public_url);
-    }
-    mapped.caption =
-      insertedRow.caption !== undefined && insertedRow.caption !== null
-        ? String(insertedRow.caption)
-        : caption;
-    localChannel?.postMessage({ type: 'album_update', payload: mapped });
-    return mapped;
-  } catch (err) {
-    const errMsg = err instanceof Error ? err.message : String(err || 'Gagal simpan foto');
-    console.log('[KEIZ Album INSERT exception]', err);
+  if (!uploaded.publicUrl) {
+    const errMsg = uploaded.error || `Gagal upload ke bucket '${ALBUM_BUCKET}'.`;
     emitSupabaseError(errMsg);
     return {
       ...tempPhoto,
-      url: finalImageUrl,
       failed: true,
       errorDetails: errMsg,
     };
   }
+
+  const finalImageUrl = uploaded.publicUrl;
+
+  // 2. Simpan { image_url, caption } ke tabel 'keiz_album' (DILARANG kirim id!)
+  for (const table of [ALBUM_TABLE, ALBUM_TABLE_FALLBACK]) {
+    try {
+      const attemptPayload: Record<string, unknown> = {
+        image_url: finalImageUrl,
+        caption,
+      };
+
+      let insertedRow: Record<string, unknown> | null = null;
+      let lastError: { message?: string; details?: string; hint?: string; code?: string } | null = null;
+
+      for (let attempt = 0; attempt < 5; attempt++) {
+        delete attemptPayload.id;
+        const { data, error } = await sb
+          .from(table)
+          .insert([attemptPayload])
+          .select()
+          .single();
+
+        if (!error && data) {
+          insertedRow = data as Record<string, unknown>;
+          lastError = null;
+          break;
+        }
+
+        lastError = error;
+        const errMsg = String(error?.message || '');
+
+        const notNullMatch = errMsg.match(/null value in column "([^"]+)"/i);
+        if (notNullMatch?.[1] === 'author' && !('author' in attemptPayload)) {
+          attemptPayload.author = toDbUserName(payload.author);
+          continue;
+        }
+
+        const missingCol =
+          errMsg.match(/Could not find the '([^']+)' column/i) ||
+          errMsg.match(/column "([^"]+)" of relation "[^"]+" does not exist/i);
+        if (missingCol?.[1] && missingCol[1] in attemptPayload) {
+          delete attemptPayload[missingCol[1]];
+          continue;
+        }
+
+        break;
+      }
+
+      if (lastError && (lastError.code === '42P01' || lastError.code === 'PGRST205') && table === ALBUM_TABLE) {
+        continue;
+      }
+
+      if (lastError || !insertedRow) {
+        const formattedErr = `Gagal simpan ke ${table}: ${lastError?.message ?? 'Error'}${
+          lastError?.code ? ` (${lastError.code})` : ''
+        }`;
+        emitSupabaseError(formattedErr);
+        return {
+          ...tempPhoto,
+          url: finalImageUrl,
+          failed: true,
+          errorDetails: formattedErr,
+        };
+      }
+
+      const mapped = mapPostinganRow(insertedRow);
+      if (!mapped.url && insertedRow.public_url) {
+        mapped.url = String(insertedRow.public_url);
+      }
+      mapped.caption =
+        insertedRow.caption !== undefined && insertedRow.caption !== null
+          ? String(insertedRow.caption)
+          : caption;
+      localChannel?.postMessage({ type: 'album_update', payload: mapped });
+      return mapped;
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err || 'Gagal simpan foto');
+      emitSupabaseError(errMsg);
+      return {
+        ...tempPhoto,
+        url: finalImageUrl,
+        failed: true,
+        errorDetails: errMsg,
+      };
+    }
+  }
+
+  return {
+    ...tempPhoto,
+    url: finalImageUrl,
+    failed: true,
+    errorDetails: 'Tabel album belum tersedia di Supabase.',
+  };
 }
 
 export async function deleteAlbumPhoto(
@@ -1382,25 +1433,36 @@ export async function deleteAlbumPhoto(
     return { ok: false, error: 'Supabase belum terhubung' };
   }
   try {
-    const { error: dbErr } = await sb.from(ALBUM_TABLE).delete().eq('id', id);
+    let dbErr: { message?: string; code?: string } | null = null;
+    for (const table of [ALBUM_TABLE, ALBUM_TABLE_FALLBACK]) {
+      const { error } = await sb.from(table).delete().eq('id', id);
+      if (!error) {
+        dbErr = null;
+        break;
+      }
+      dbErr = error;
+      if (error.code !== '42P01' && error.code !== 'PGRST205') {
+        break;
+      }
+    }
+
     if (dbErr) {
-      const msg = `ERROR hapus dari ${ALBUM_TABLE}: ${dbErr.message} | code: ${dbErr.code ?? '-'}`;
-      console.log('[KEIZ Album DELETE db error]', dbErr);
+      const msg = `Gagal hapus foto: ${dbErr.message} (${dbErr.code ?? '-'})`;
       emitSupabaseError(msg);
       return { ok: false, error: msg };
     }
 
-    if (imageUrl && imageUrl.includes(`/${ALBUM_BUCKET}/`)) {
-      const idx = imageUrl.indexOf(`/${ALBUM_BUCKET}/`);
-      const objectPath = decodeURIComponent(
-        imageUrl.slice(idx + ALBUM_BUCKET.length + 2).split('?')[0]
-      );
-      if (objectPath) {
-        const { error: storageErr } = await sb.storage
-          .from(ALBUM_BUCKET)
-          .remove([objectPath]);
-        if (storageErr) {
-          console.log('[KEIZ Album DELETE storage error]', storageErr);
+    if (imageUrl) {
+      for (const bucket of [PRIMARY_PHOTO_BUCKET, FALLBACK_PHOTO_BUCKET]) {
+        if (imageUrl.includes(`/${bucket}/`)) {
+          const idx = imageUrl.indexOf(`/${bucket}/`);
+          const objectPath = decodeURIComponent(
+            imageUrl.slice(idx + bucket.length + 2).split('?')[0]
+          );
+          if (objectPath) {
+            await sb.storage.from(bucket).remove([objectPath]);
+          }
+          break;
         }
       }
     }
@@ -1409,7 +1471,6 @@ export async function deleteAlbumPhoto(
     return { ok: true };
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Gagal hapus foto album';
-    console.log('[KEIZ Album DELETE exception]', err);
     emitSupabaseError(msg);
     return { ok: false, error: msg };
   }

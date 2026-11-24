@@ -643,8 +643,8 @@ export const NobarView: React.FC<NobarViewProps> = ({
 
   return (
     <div className="animate-slide-in-right flex flex-col gap-4 pb-3">
-      {/* Header + Partner Presence Avatar Badge */}
-      <div className="flex items-center justify-between gap-2">
+      {/* Sticky Header + Partner Presence Avatar Badge */}
+      <div className="sticky top-0 z-20 -mx-4 flex items-center justify-between gap-2 bg-[#FFF2F7]/95 px-4 py-2 backdrop-blur-sm">
         <div className="flex items-center gap-2.5">
           <button
             type="button"

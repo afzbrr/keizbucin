@@ -37,6 +37,7 @@ import {
   subscribeConnectionStatus,
   subscribeTypingBroadcast,
   updateChatReact,
+  uploadImageToKeizStorage,
 } from '../supabaseClient';
 import { soundFX } from '../sound';
 import { SupabaseConfigCard } from './SupabaseConfigCard';
@@ -94,7 +95,6 @@ export const ChatView: React.FC<ChatViewProps> = ({
   }, []);
 
   const listEndRef = useRef<HTMLDivElement | null>(null);
-  const fileRef = useRef<HTMLInputElement | null>(null);
   const touchStartX = useRef<number | null>(null);
   const longPressTimer = useRef<number | null>(null);
   const longPressFiredRef = useRef(false);
@@ -529,20 +529,31 @@ export const ChatView: React.FC<ChatViewProps> = ({
     setMessages(updated);
   };
 
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    e.currentTarget.value = '';
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === 'string') {
-        handleSend('pap dulu nihh', {
-          type: 'image',
-          image_url: reader.result,
-        });
-      }
-    };
-    reader.readAsDataURL(file);
-    e.target.value = '';
+
+    if (file.size === 0) {
+      setCopiedToast('izinin akses foto dulu di Pengaturan HP > KEIZ BUCIN > Foto > Izinkan');
+      setTimeout(() => setCopiedToast(null), 3500);
+      return;
+    }
+
+    setShowPlusMenu(false);
+    setCopiedToast('lagi upload foto...');
+    const uploaded = await uploadImageToKeizStorage(file, file.name, currentUser, 'chat');
+    if (!uploaded.publicUrl) {
+      setCopiedToast(uploaded.error || 'Gagal upload foto, coba lagi');
+      setTimeout(() => setCopiedToast(null), 3200);
+      return;
+    }
+
+    setCopiedToast(null);
+    await handleSend('pap dulu nihh', {
+      type: 'image',
+      image_url: uploaded.publicUrl,
+    });
   };
 
   const handleVoiceToggle = () => {
@@ -577,8 +588,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
   return (
     <div className="animate-slide-in-right flex min-h-0 flex-1 flex-col gap-2 overflow-hidden">
-      {/* Partner Header + Call + Supabase Config Button */}
-      <div className="keiz-card flex shrink-0 items-center justify-between bg-white px-3 py-2">
+      {/* Sticky Partner Header + Call + Supabase Config Button */}
+      <div className="keiz-card sticky top-0 z-20 flex shrink-0 items-center justify-between bg-white px-3 py-2">
         <div className="flex min-w-0 items-center gap-2.5">
           <button
             type="button"
@@ -1006,17 +1017,20 @@ export const ChatView: React.FC<ChatViewProps> = ({
         </div>
       )}
 
-      {/* + Attachment Drawer */}
+      {/* + Attachment Drawer (native label wrapping file input for PWA & WebView) */}
       {showPlusMenu && (
         <div className="animate-bubble-pop grid shrink-0 grid-cols-2 gap-2 rounded-2xl border border-[#FFD6E7] bg-white p-2.5 text-xs font-bold">
-          <button
-            type="button"
-            onClick={() => fileRef.current?.click()}
-            className="flex items-center justify-center gap-1.5 rounded-xl bg-[#EFF6FF] py-2.5 text-[#3B82F6] cursor-pointer"
-          >
+          <label className="relative flex cursor-pointer items-center justify-center gap-1.5 overflow-hidden rounded-xl bg-[#EFF6FF] py-2.5 text-[#3B82F6]">
+            <input
+              type="file"
+              accept="image/*"
+              onChange={handleImageUpload}
+              aria-label="Kirim foto"
+              className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+            />
             <Camera className="h-4 w-4" />
             <span>Foto</span>
-          </button>
+          </label>
           <button
             type="button"
             onClick={() => {
@@ -1030,13 +1044,6 @@ export const ChatView: React.FC<ChatViewProps> = ({
             <Heart className="h-4 w-4" />
             <span>Unek</span>
           </button>
-          <input
-            ref={fileRef}
-            type="file"
-            accept="image/*"
-            onChange={handleImageUpload}
-            className="hidden"
-          />
         </div>
       )}
 
@@ -1062,7 +1069,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
           e.preventDefault();
           void handleSend();
         }}
-        className="flex shrink-0 items-center gap-1.5 pt-0.5"
+        className="sticky bottom-0 z-10 flex shrink-0 items-center gap-1.5 pt-0.5"
       >
         <button
           type="button"

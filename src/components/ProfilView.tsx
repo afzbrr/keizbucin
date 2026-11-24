@@ -24,6 +24,7 @@ import {
   fetchProfile,
   saveProfile,
   subscribeRealtime,
+  uploadImageToKeizStorage,
 } from '../supabaseClient';
 import { SupabaseConfigCard } from './SupabaseConfigCard';
 import type {
@@ -60,34 +61,58 @@ function readSongArtMap(): Record<string, string> {
   }
 }
 
-async function compressImageFile(file: File, maxDim = 960): Promise<string> {
-  const dataUrl = await new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '');
-    reader.onerror = () => reject(new Error('Failed to read image'));
-    reader.readAsDataURL(file);
-  });
-  if (!dataUrl || file.type === 'image/svg+xml') return dataUrl;
+async function compressImageBlob(file: File, maxDim = 1080): Promise<Blob> {
+  if (
+    file.type === 'image/svg+xml' ||
+    file.type === 'image/gif' ||
+    file.size <= 350 * 1024
+  ) {
+    return file;
+  }
 
-  return new Promise<string>((resolve) => {
+  return new Promise<Blob>((resolve) => {
+    let objectUrl = '';
+    try {
+      objectUrl = URL.createObjectURL(file);
+    } catch {
+      resolve(file);
+      return;
+    }
+
     const img = new Image();
     img.onload = () => {
-      const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
-      const w = Math.max(1, Math.round(img.width * scale));
-      const h = Math.max(1, Math.round(img.height * scale));
-      const canvas = document.createElement('canvas');
-      canvas.width = w;
-      canvas.height = h;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) {
-        resolve(dataUrl);
-        return;
+      try {
+        const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+        const w = Math.max(1, Math.round(img.width * scale));
+        const h = Math.max(1, Math.round(img.height * scale));
+        const canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          URL.revokeObjectURL(objectUrl);
+          resolve(file);
+          return;
+        }
+        ctx.drawImage(img, 0, 0, w, h);
+        canvas.toBlob(
+          (blob) => {
+            URL.revokeObjectURL(objectUrl);
+            resolve(blob && blob.size > 0 ? blob : file);
+          },
+          'image/jpeg',
+          0.84
+        );
+      } catch {
+        URL.revokeObjectURL(objectUrl);
+        resolve(file);
       }
-      ctx.drawImage(img, 0, 0, w, h);
-      resolve(canvas.toDataURL('image/jpeg', 0.82));
     };
-    img.onerror = () => resolve(dataUrl);
-    img.src = dataUrl;
+    img.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      resolve(file);
+    };
+    img.src = objectUrl;
   });
 }
 
@@ -136,13 +161,14 @@ export const ProfilView: React.FC<ProfilViewProps> = ({
   // Real user-uploaded posts from Supabase postingan_keiz (empty until uploaded)
   const [posts, setPosts] = useState<GalleryPhoto[]>([]);
   const [showPostModal, setShowPostModal] = useState(false);
-  const [postPhotoUrl, setPostPhotoUrl] = useState('');
+  const [postFile, setPostFile] = useState<File | null>(null);
+  const [postPreviewUrl, setPostPreviewUrl] = useState('');
   const [postCaption, setPostCaption] = useState('');
+  const [postUploading, setPostUploading] = useState(false);
+  const [postError, setPostError] = useState<string | null>(null);
+  const [photoUploading, setPhotoUploading] = useState(false);
+  const [photoUploadError, setPhotoUploadError] = useState<string | null>(null);
   const [showProfilSettings, setShowProfilSettings] = useState(false);
-
-  const avatarFileRef = useRef<HTMLInputElement | null>(null);
-  const bannerFileRef = useRef<HTMLInputElement | null>(null);
-  const postFileRef = useRef<HTMLInputElement | null>(null);
 
   const ytHostRef = useRef<HTMLDivElement | null>(null);
   const ytPlayerRef = useRef<YTProfilPlayer | null>(null);
@@ -339,44 +365,80 @@ export const ProfilView: React.FC<ProfilViewProps> = ({
     e: React.ChangeEvent<HTMLInputElement>
   ) => {
     const file = e.target.files?.[0];
-    e.target.value = '';
-    if (!file || !isViewingSelf) return;
-    const compressed = await compressImageFile(file, 720);
-    if (!compressed) return;
-    soundFX.playHeartBurst();
-    const updated: CoupleProfile = isFaiz
-      ? { ...profile, faizPhoto: compressed }
-      : { ...profile, kenatPhoto: compressed };
-    await saveProfile(updated, currentUser);
-    const fresh = await fetchProfile();
-    onUpdateProfile({
-      ...fresh,
-      ...(isFaiz ? { faizPhoto: compressed } : { kenatPhoto: compressed }),
-    });
-    setPhotoPrompt(null);
-    showToastMsg(`Foto profil ${myName} keganti`);
+    e.currentTarget.value = '';
+    if (!file || !isViewingSelf || photoUploading) return;
+    if (file.size === 0) {
+      setPhotoUploadError('izinin akses foto dulu di Pengaturan HP > KEIZ BUCIN > Foto > Izinkan');
+      return;
+    }
+
+    setPhotoUploading(true);
+    setPhotoUploadError(null);
+    try {
+      const blob = await compressImageBlob(file, 720);
+      const uploaded = await uploadImageToKeizStorage(blob, file.name, currentUser, 'profil');
+      if (!uploaded.publicUrl) {
+        setPhotoUploadError(uploaded.error || 'Gagal upload foto profil, coba lagi.');
+        return;
+      }
+
+      soundFX.playHeartBurst();
+      const updated: CoupleProfile = isFaiz
+        ? { ...profile, faizPhoto: uploaded.publicUrl }
+        : { ...profile, kenatPhoto: uploaded.publicUrl };
+      await saveProfile(updated, currentUser);
+      const fresh = await fetchProfile();
+      onUpdateProfile({
+        ...fresh,
+        ...(isFaiz ? { faizPhoto: uploaded.publicUrl } : { kenatPhoto: uploaded.publicUrl }),
+      });
+      setPhotoPrompt(null);
+      showToastMsg(`Foto profil ${myName} keganti`);
+    } catch (err) {
+      setPhotoUploadError(err instanceof Error ? err.message : 'Gagal upload foto profil');
+    } finally {
+      setPhotoUploading(false);
+    }
   };
 
   const handleBannerSelected = async (
     e: React.ChangeEvent<HTMLInputElement>
   ) => {
     const file = e.target.files?.[0];
-    e.target.value = '';
-    if (!file || !isViewingSelf) return;
-    const compressed = await compressImageFile(file, 1080);
-    if (!compressed) return;
-    soundFX.playHeartBurst();
-    const updated: CoupleProfile = isFaiz
-      ? { ...profile, faizBanner: compressed }
-      : { ...profile, kenatBanner: compressed };
-    await saveProfile(updated, currentUser);
-    const fresh = await fetchProfile();
-    onUpdateProfile({
-      ...fresh,
-      ...(isFaiz ? { faizBanner: compressed } : { kenatBanner: compressed }),
-    });
-    setPhotoPrompt(null);
-    showToastMsg(`Foto latar ${myName} berhasil diganti`);
+    e.currentTarget.value = '';
+    if (!file || !isViewingSelf || photoUploading) return;
+    if (file.size === 0) {
+      setPhotoUploadError('izinin akses foto dulu di Pengaturan HP > KEIZ BUCIN > Foto > Izinkan');
+      return;
+    }
+
+    setPhotoUploading(true);
+    setPhotoUploadError(null);
+    try {
+      const blob = await compressImageBlob(file, 1080);
+      const uploaded = await uploadImageToKeizStorage(blob, file.name, currentUser, 'profil');
+      if (!uploaded.publicUrl) {
+        setPhotoUploadError(uploaded.error || 'Gagal upload foto latar, coba lagi.');
+        return;
+      }
+
+      soundFX.playHeartBurst();
+      const updated: CoupleProfile = isFaiz
+        ? { ...profile, faizBanner: uploaded.publicUrl }
+        : { ...profile, kenatBanner: uploaded.publicUrl };
+      await saveProfile(updated, currentUser);
+      const fresh = await fetchProfile();
+      onUpdateProfile({
+        ...fresh,
+        ...(isFaiz ? { faizBanner: uploaded.publicUrl } : { kenatBanner: uploaded.publicUrl }),
+      });
+      setPhotoPrompt(null);
+      showToastMsg(`Foto latar ${myName} berhasil diganti`);
+    } catch (err) {
+      setPhotoUploadError(err instanceof Error ? err.message : 'Gagal upload foto latar');
+    } finally {
+      setPhotoUploading(false);
+    }
   };
 
   const handleSaveEdit = async (e: React.FormEvent) => {
@@ -506,30 +568,68 @@ export const ProfilView: React.FC<ProfilViewProps> = ({
     }
   };
 
-  const handlePostFilePick = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handlePostFilePick = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    e.target.value = '';
+    e.currentTarget.value = '';
     if (!file) return;
-    const compressed = await compressImageFile(file, 900);
-    if (compressed) setPostPhotoUrl(compressed);
+    if (file.size === 0) {
+      setPostError('izinin akses foto dulu di Pengaturan HP > KEIZ BUCIN > Foto > Izinkan');
+      return;
+    }
+    setPostError(null);
+    setPostFile(file);
+    try {
+      if (postPreviewUrl && postPreviewUrl.startsWith('blob:')) {
+        URL.revokeObjectURL(postPreviewUrl);
+      }
+      setPostPreviewUrl(URL.createObjectURL(file));
+    } catch {
+      const reader = new FileReader();
+      reader.onload = () => {
+        if (typeof reader.result === 'string') setPostPreviewUrl(reader.result);
+      };
+      reader.readAsDataURL(file);
+    }
   };
 
-  const handleCreatePost = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!postPhotoUrl || !isViewingSelf) return;
-    soundFX.playHeartBurst();
-    const saved = await addPostingan({
-      author: currentUser,
-      caption: postCaption.trim() || 'momen gemes kita berdua',
-      image_url: postPhotoUrl,
-    });
-    if (saved) {
+  const handleCreatePost = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    if (!postFile || !isViewingSelf || postUploading) return;
+    setPostUploading(true);
+    setPostError(null);
+    try {
+      const blob = await compressImageBlob(postFile, 1080);
+      const uploaded = await uploadImageToKeizStorage(blob, postFile.name, currentUser, 'postingan');
+      if (!uploaded.publicUrl) {
+        setPostError(uploaded.error || 'Gagal upload postingan, coba lagi ya.');
+        return;
+      }
+
+      const saved = await addPostingan({
+        author: currentUser,
+        caption: postCaption.trim() || 'momen gemes kita berdua',
+        image_url: uploaded.publicUrl,
+      });
+      if (saved.failed) {
+        setPostError(saved.errorDetails || 'Gagal simpan postingan ke Supabase.');
+        return;
+      }
+
+      soundFX.playHeartBurst();
       setPosts((prev) => [saved, ...prev.filter((p) => p.id !== saved.id)]);
+      if (postPreviewUrl && postPreviewUrl.startsWith('blob:')) {
+        URL.revokeObjectURL(postPreviewUrl);
+      }
+      setPostFile(null);
+      setPostPreviewUrl('');
+      setPostCaption('');
+      setShowPostModal(false);
+      showToastMsg('Postingan baru berhasil dipajang');
+    } catch (err) {
+      setPostError(err instanceof Error ? err.message : 'Gagal upload postingan.');
+    } finally {
+      setPostUploading(false);
     }
-    setPostPhotoUrl('');
-    setPostCaption('');
-    setShowPostModal(false);
-    showToastMsg('Postingan baru berhasil dipajang');
   };
 
   const handleShareProfile = () => {
@@ -562,31 +662,8 @@ export const ProfilView: React.FC<ProfilViewProps> = ({
         <div id="profil-yt-player" ref={ytHostRef} />
       </div>
 
-      {/* Hidden Direct File Inputs */}
-      <input
-        ref={avatarFileRef}
-        type="file"
-        accept="image/*"
-        onChange={handleSelfAvatarSelected}
-        className="hidden"
-      />
-      <input
-        ref={bannerFileRef}
-        type="file"
-        accept="image/*"
-        onChange={handleBannerSelected}
-        className="hidden"
-      />
-      <input
-        ref={postFileRef}
-        type="file"
-        accept="image/*"
-        onChange={handlePostFilePick}
-        className="hidden"
-      />
-
-      {/* Top Bar: < | Profil [ViewedName] | (Edit + Settings only when viewing own profile) */}
-      <div className="flex h-12 items-center justify-between">
+      {/* Sticky Top Bar: < | Profil [ViewedName] | (Edit + Settings only when viewing own profile) */}
+      <div className="sticky top-0 z-20 -mx-4 flex h-12 items-center justify-between bg-[#FFF2F7]/95 px-4 backdrop-blur-sm">
         <button
           type="button"
           onClick={onBack}
@@ -946,6 +1023,10 @@ export const ProfilView: React.FC<ProfilViewProps> = ({
                       type="button"
                       onClick={() => {
                         soundFX.playClick();
+                        setPostFile(null);
+                        setPostPreviewUrl('');
+                        setPostCaption('');
+                        setPostError(null);
                         setShowPostModal(true);
                       }}
                       className="text-xs font-extrabold text-[#3B82F6] cursor-pointer"
@@ -978,8 +1059,10 @@ export const ProfilView: React.FC<ProfilViewProps> = ({
                     type="button"
                     onClick={() => {
                       soundFX.playPop();
-                      setPostPhotoUrl('');
+                      setPostFile(null);
+                      setPostPreviewUrl('');
                       setPostCaption('');
+                      setPostError(null);
                       setShowPostModal(true);
                     }}
                     className="keiz-btn-primary btn-bucin mt-3.5 inline-flex min-h-[42px] items-center gap-1.5 px-5 text-xs cursor-pointer"
@@ -1088,26 +1171,44 @@ export const ProfilView: React.FC<ProfilViewProps> = ({
                 </div>
               )}
             </div>
+            {photoUploadError && (
+              <p className="mt-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-[11px] font-bold text-rose-700">
+                {photoUploadError}
+              </p>
+            )}
             <div className="mt-4 flex flex-col gap-2">
+              <label
+                onClick={() => {
+                  soundFX.playClick();
+                  setPhotoUploadError(null);
+                }}
+                className={`keiz-btn-primary btn-bucin relative flex min-h-[46px] w-full items-center justify-center gap-2 overflow-hidden text-xs ${
+                  photoUploading ? 'pointer-events-none opacity-75' : 'cursor-pointer'
+                }`}
+              >
+                <input
+                  type="file"
+                  accept="image/*"
+                  disabled={photoUploading}
+                  onChange={
+                    photoPrompt === 'avatar' ? handleSelfAvatarSelected : handleBannerSelected
+                  }
+                  aria-label="Pilih foto dari galeri"
+                  className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+                />
+                <ImagePlus className="h-4 w-4" />
+                <span>{photoUploading ? 'lagi upload...' : 'Pilih Foto dari Galeri'}</span>
+              </label>
               <button
                 type="button"
                 onClick={() => {
-                  soundFX.playClick();
-                  if (photoPrompt === 'avatar') {
-                    avatarFileRef.current?.click();
-                  } else {
-                    bannerFileRef.current?.click();
+                  if (!photoUploading) {
+                    setPhotoUploadError(null);
+                    setPhotoPrompt(null);
                   }
                 }}
-                className="keiz-btn-primary btn-bucin flex min-h-[46px] w-full items-center justify-center gap-2 text-xs cursor-pointer"
-              >
-                <ImagePlus className="h-4 w-4" />
-                <span>Pilih Foto dari Galeri</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setPhotoPrompt(null)}
-                className="btn-bucin min-h-[42px] w-full rounded-full border border-[#FFD6E7] bg-[#FFF2F7] text-xs font-extrabold text-[#8A6A7A] cursor-pointer"
+                disabled={photoUploading}
+                className="btn-bucin min-h-[42px] w-full rounded-full border border-[#FFD6E7] bg-[#FFF2F7] text-xs font-extrabold text-[#8A6A7A] cursor-pointer disabled:opacity-50"
               >
                 Batal
               </button>
@@ -1124,7 +1225,7 @@ export const ProfilView: React.FC<ProfilViewProps> = ({
         >
           <div
             onClick={(e) => e.stopPropagation()}
-            className="animate-slide-up-bounce flex max-h-[82vh] w-full max-w-[430px] flex-col rounded-t-[28px] border border-[#FFD6E7] bg-white p-5 shadow-2xl sm:rounded-[28px]"
+            className="animate-slide-up-bounce flex max-h-[82dvh] w-full max-w-[430px] flex-col rounded-t-[28px] border border-[#FFD6E7] bg-white p-5 shadow-2xl sm:rounded-[28px]"
           >
             <div className="flex items-center justify-between">
               <h3 className="font-display text-lg font-extrabold text-[#2D0A1E]">
@@ -1232,14 +1333,18 @@ export const ProfilView: React.FC<ProfilViewProps> = ({
               </button>
             </div>
 
-            <button
-              type="button"
-              onClick={() => postFileRef.current?.click()}
-              className="mt-4 flex h-44 w-full flex-col items-center justify-center overflow-hidden rounded-2xl border-2 border-dashed border-[#FFD6E7] bg-[#FFF8FA] text-[#8A6A7A] cursor-pointer"
-            >
-              {postPhotoUrl ? (
+            <label className="relative mt-4 flex h-44 w-full cursor-pointer flex-col items-center justify-center overflow-hidden rounded-2xl border-2 border-dashed border-[#FFD6E7] bg-[#FFF8FA] text-[#8A6A7A]">
+              <input
+                type="file"
+                accept="image/*"
+                disabled={postUploading}
+                onChange={handlePostFilePick}
+                aria-label="Pilih foto postingan"
+                className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+              />
+              {postPreviewUrl ? (
                 <img
-                  src={postPhotoUrl}
+                  src={postPreviewUrl}
                   alt="Preview postingan"
                   className="h-full w-full object-cover"
                 />
@@ -1251,30 +1356,48 @@ export const ProfilView: React.FC<ProfilViewProps> = ({
                   </span>
                 </>
               )}
-            </button>
+            </label>
+
+            {postError && (
+              <div className="mt-2.5 flex items-center justify-between gap-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-[11px] font-bold text-rose-700">
+                <span className="flex-1 break-words">{postError}</span>
+                {postFile && (
+                  <button
+                    type="button"
+                    onClick={() => void handleCreatePost()}
+                    disabled={postUploading}
+                    className="shrink-0 rounded-full bg-rose-600 px-2.5 py-1 text-[10px] font-extrabold text-white cursor-pointer"
+                  >
+                    coba lagi
+                  </button>
+                )}
+              </div>
+            )}
 
             <input
               type="text"
               value={postCaption}
               onChange={(e) => setPostCaption(e.target.value)}
               placeholder="Tulis caption momen kalian..."
+              disabled={postUploading}
               className="mt-3 min-h-[44px] w-full rounded-2xl border border-[#FFD6E7] bg-[#FFF2F7] px-3.5 text-xs font-semibold text-[#2D0A1E] placeholder-[#9A7A8A] focus:outline-none"
             />
 
             <div className="mt-4 grid grid-cols-2 gap-2.5">
               <button
                 type="button"
-                onClick={() => setShowPostModal(false)}
-                className="btn-bucin min-h-[46px] rounded-full border border-[#FFD6E7] bg-[#FFF2F7] text-xs font-extrabold text-[#8A6A7A] cursor-pointer"
+                onClick={() => !postUploading && setShowPostModal(false)}
+                disabled={postUploading}
+                className="btn-bucin min-h-[46px] rounded-full border border-[#FFD6E7] bg-[#FFF2F7] text-xs font-extrabold text-[#8A6A7A] cursor-pointer disabled:opacity-50"
               >
                 Batal
               </button>
               <button
                 type="submit"
-                disabled={!postPhotoUrl}
+                disabled={!postFile || postUploading}
                 className="keiz-btn-primary btn-bucin min-h-[46px] text-xs disabled:opacity-45 cursor-pointer"
               >
-                Posting
+                {postUploading ? 'lagi upload...' : 'Posting'}
               </button>
             </div>
           </form>
@@ -1290,7 +1413,7 @@ export const ProfilView: React.FC<ProfilViewProps> = ({
           <form
             onClick={(e) => e.stopPropagation()}
             onSubmit={handleSaveEdit}
-            className="animate-slide-up-bounce max-h-[88vh] w-full max-w-[430px] overflow-y-auto rounded-t-[28px] border border-[#FFD6E7] bg-white p-5 shadow-2xl sm:rounded-[28px]"
+            className="animate-slide-up-bounce max-h-[88dvh] w-full max-w-[430px] overflow-y-auto rounded-t-[28px] border border-[#FFD6E7] bg-white p-5 shadow-2xl sm:rounded-[28px]"
           >
             <div className="mx-auto mb-3 h-1.5 w-12 rounded-full bg-pink-200 sm:hidden" />
             <div className="flex items-center justify-between">
@@ -1359,7 +1482,7 @@ export const ProfilView: React.FC<ProfilViewProps> = ({
         >
           <div
             onClick={(e) => e.stopPropagation()}
-            className="keiz-card animate-bubble-pop max-h-[88vh] w-full max-w-[395px] space-y-3 overflow-y-auto bg-white p-5"
+            className="keiz-card animate-bubble-pop max-h-[88dvh] w-full max-w-[395px] space-y-3 overflow-y-auto bg-white p-5"
           >
             <div className="flex items-center justify-between">
               <h3 className="font-display text-base font-extrabold text-[#2D0A1E]">
