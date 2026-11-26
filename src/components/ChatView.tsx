@@ -48,6 +48,13 @@ import { soundFX } from '../sound';
 import { SupabaseConfigCard } from './SupabaseConfigCard';
 import { AppleEmoji, AppleTextWithEmojis, QUICK_REACT_EMOJIS } from './AppleEmoji';
 import {
+  getReactionEntries,
+  getUserReaction,
+  ReactionDetailsModal,
+  ReactionPill,
+  toggleUserReaction,
+} from './ChatReactions';
+import {
   ChatWallpaperModal,
   getWallpaperCss,
   loadSavedWallpaper,
@@ -88,6 +95,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const [replyingTo, setReplyingTo] = useState<ChatMessage | null>(null);
   const [activeBubbleMenu, setActiveBubbleMenu] = useState<string | null>(null);
   const [reactTargetMsg, setReactTargetMsg] = useState<ChatMessage | null>(null);
+  const [reactionDetailMsgId, setReactionDetailMsgId] = useState<string | null>(null);
   const [showInputEmojiPicker, setShowInputEmojiPicker] = useState(false);
   const [shakingBubbleId, setShakingBubbleId] = useState<string | null>(null);
   const [partnerTyping, setPartnerTyping] = useState(false);
@@ -569,37 +577,39 @@ export const ChatView: React.FC<ChatViewProps> = ({
     emoji: string,
     burstPoint?: { x: number; y: number }
   ) => {
-    const nextReact = msg.react === emoji ? undefined : emoji;
+    const { nextSerialized, addedEmoji } = toggleUserReaction(
+      msg.react,
+      userLower,
+      emoji,
+      msg.sender
+    );
     soundFX.playPop();
-    if (nextReact === '❤️' && burstPoint) {
+    if (addedEmoji === '❤️' && burstPoint) {
       onHeartBurstAt(burstPoint.x, burstPoint.y);
       setShakingBubbleId(msg.id);
       setTimeout(() => setShakingBubbleId(null), 500);
     }
     setActiveBubbleMenu(null);
     setReactTargetMsg(null);
+    if (!nextSerialized && reactionDetailMsgId === msg.id) {
+      setReactionDetailMsgId(null);
+    }
 
     // Optimistic update so emoji appears immediately
     setMessages((prev) =>
-      prev.map((m) => (m.id === msg.id ? { ...m, react: nextReact } : m))
+      prev.map((m) => (m.id === msg.id ? { ...m, react: nextSerialized } : m))
     );
 
-    const updated = await updateChatReact(msg.id, nextReact);
+    const updated = await updateChatReact(msg.id, nextSerialized);
     if (updated.length > 0) {
       setMessages(updated);
     }
   };
 
-  const handleReactBadgeClick = async (
-    msg: ChatMessage,
-    emoji: string,
-    e: React.MouseEvent
-  ) => {
-    const rect = e.currentTarget.getBoundingClientRect();
-    await applyReactionToMessage(msg, emoji, {
-      x: rect.left + rect.width / 2,
-      y: rect.top + rect.height / 2,
-    });
+  const handleReactBadgeClick = (msg: ChatMessage) => {
+    soundFX.playClick();
+    setActiveBubbleMenu(null);
+    setReactionDetailMsgId(msg.id);
   };
 
   const handlePickerReactSelect = async (emojiData: EmojiClickData, event: MouseEvent) => {
@@ -1019,21 +1029,12 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     </div>
                   </div>
 
-                  {msg.react && (
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        void handleReactBadgeClick(msg, msg.react!, e);
-                      }}
-                      title="Tap untuk hapus react"
-                      className={`absolute -bottom-2.5 ${
-                        isMine ? 'left-2' : 'right-2'
-                      } flex items-center justify-center rounded-full border border-[#FFD6E7] bg-white px-1.5 py-0.5 text-xs shadow cursor-pointer`}
-                    >
-                      <AppleEmoji emoji={msg.react} size={15} />
-                    </button>
-                  )}
+                  <ReactionPill
+                    rawReact={msg.react}
+                    msgSender={msg.sender}
+                    isMine={isMine}
+                    onClick={() => handleReactBadgeClick(msg)}
+                  />
                 </div>
               ) : (
                 <div
@@ -1133,21 +1134,14 @@ export const ChatView: React.FC<ChatViewProps> = ({
                       ))}
                   </div>
 
-                  {/* Attached Reaction Pill at corner (click to remove/toggle) */}
-                  {msg.react && !msg.is_deleted && (
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        void handleReactBadgeClick(msg, msg.react!, e);
-                      }}
-                      title="Tap untuk hapus react"
-                      className={`absolute -bottom-2.5 ${
-                        isMine ? 'left-2' : 'right-2'
-                      } flex items-center justify-center rounded-full border border-[#FFD6E7] bg-white px-1.5 py-0.5 text-xs shadow cursor-pointer`}
-                    >
-                      <AppleEmoji emoji={msg.react} size={15} />
-                    </button>
+                  {/* Attached Reaction Pill at corner (click to see who reacted) */}
+                  {!msg.is_deleted && (
+                    <ReactionPill
+                      rawReact={msg.react}
+                      msgSender={msg.sender}
+                      isMine={isMine}
+                      onClick={() => handleReactBadgeClick(msg)}
+                    />
                   )}
                 </div>
               )}
@@ -1180,24 +1174,27 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   }`}
                 >
                   <div className="flex flex-wrap items-center gap-1">
-                    {QUICK_REACT_EMOJIS.map((em) => (
-                      <button
-                        key={em}
-                        type="button"
-                        onClick={(e) => {
-                          const rect = e.currentTarget.getBoundingClientRect();
-                          void applyReactionToMessage(msg, em, {
-                            x: rect.left + rect.width / 2,
-                            y: rect.top + rect.height / 2,
-                          });
-                        }}
-                        className={`flex h-8 w-8 items-center justify-center rounded-full text-sm transition-transform active:scale-90 cursor-pointer ${
-                          msg.react === em ? 'bg-[#FFE3EE] ring-1 ring-[#FF2E7E]' : 'bg-[#FFF5F9]'
-                        }`}
-                      >
-                        <AppleEmoji emoji={em} size={20} />
-                      </button>
-                    ))}
+                    {QUICK_REACT_EMOJIS.map((em) => {
+                      const myReact = getUserReaction(msg.react, userLower, msg.sender);
+                      return (
+                        <button
+                          key={em}
+                          type="button"
+                          onClick={(e) => {
+                            const rect = e.currentTarget.getBoundingClientRect();
+                            void applyReactionToMessage(msg, em, {
+                              x: rect.left + rect.width / 2,
+                              y: rect.top + rect.height / 2,
+                            });
+                          }}
+                          className={`flex h-8 w-8 items-center justify-center rounded-full text-sm transition-transform active:scale-90 cursor-pointer ${
+                            myReact === em ? 'bg-[#FFE3EE] ring-1 ring-[#FF2E7E]' : 'bg-[#FFF5F9]'
+                          }`}
+                        >
+                          <AppleEmoji emoji={em} size={20} />
+                        </button>
+                      );
+                    })}
                     <button
                       type="button"
                       onClick={() => {
@@ -1520,17 +1517,23 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   />
                 </p>
               </div>
-              {reactTargetMsg.react && (
-                <button
-                  type="button"
-                  onClick={() =>
-                    void applyReactionToMessage(reactTargetMsg, reactTargetMsg.react!)
-                  }
-                  className="mr-1.5 shrink-0 rounded-full border border-rose-200 bg-rose-50 px-2.5 py-1 text-[10px] font-extrabold text-rose-600 cursor-pointer"
-                >
-                  Hapus react
-                </button>
-              )}
+              {(() => {
+                const myReact = getUserReaction(
+                  reactTargetMsg.react,
+                  userLower,
+                  reactTargetMsg.sender
+                );
+                if (!myReact) return null;
+                return (
+                  <button
+                    type="button"
+                    onClick={() => void applyReactionToMessage(reactTargetMsg, myReact)}
+                    className="mr-1.5 shrink-0 rounded-full border border-rose-200 bg-rose-50 px-2.5 py-1 text-[10px] font-extrabold text-rose-600 cursor-pointer"
+                  >
+                    Hapus react
+                  </button>
+                );
+              })()}
               <button
                 type="button"
                 onClick={() => setReactTargetMsg(null)}
@@ -1553,6 +1556,34 @@ export const ChatView: React.FC<ChatViewProps> = ({
           </div>
         </div>
       )}
+
+      {/* Reaction Details Modal (WhatsApp / Telegram style: see who reacted) */}
+      {(() => {
+        const detailMsg = reactionDetailMsgId
+          ? messages.find((m) => m.id === reactionDetailMsgId)
+          : undefined;
+        if (
+          !detailMsg ||
+          getReactionEntries(detailMsg.react, detailMsg.sender).length === 0
+        ) {
+          return null;
+        }
+        return (
+          <ReactionDetailsModal
+            msg={detailMsg}
+            currentUser={userLower}
+            profile={profile}
+            onToggleMyReaction={(emoji, pt) =>
+              void applyReactionToMessage(detailMsg, emoji, pt)
+            }
+            onOpenFullPicker={() => {
+              setReactionDetailMsgId(null);
+              setReactTargetMsg(detailMsg);
+            }}
+            onClose={() => setReactionDetailMsgId(null)}
+          />
+        );
+      })()}
 
       {/* Fullscreen Photo Preview Modal (View, Save, Delete) */}
       {previewPhotoMsg && previewPhotoMsg.image_url && (

@@ -41,6 +41,13 @@ import {
 import { soundFX } from '../sound';
 import { AppleEmoji, AppleTextWithEmojis, QUICK_REACT_EMOJIS } from './AppleEmoji';
 import {
+  getReactionEntries,
+  getUserReaction,
+  ReactionDetailsModal,
+  ReactionPill,
+  toggleUserReaction,
+} from './ChatReactions';
+import {
   ChatWallpaperModal,
   DEFAULT_NOBAR_WALLPAPER_ID,
   getWallpaperCss,
@@ -136,6 +143,7 @@ export const NobarView: React.FC<NobarViewProps> = ({
   const [replyingTo, setReplyingTo] = useState<ChatMessage | null>(null);
   const [activeBubbleMenu, setActiveBubbleMenu] = useState<string | null>(null);
   const [reactTargetMsg, setReactTargetMsg] = useState<ChatMessage | null>(null);
+  const [reactionDetailMsgId, setReactionDetailMsgId] = useState<string | null>(null);
   const [showInputEmojiPicker, setShowInputEmojiPicker] = useState(false);
   const [shakingBubbleId, setShakingBubbleId] = useState<string | null>(null);
   const [wallpaperCfg, setWallpaperCfg] = useState<SavedWallpaperConfig>(() =>
@@ -845,21 +853,29 @@ export const NobarView: React.FC<NobarViewProps> = ({
     emoji: string,
     burstPoint?: { x: number; y: number }
   ) => {
-    const nextReact = msg.react === emoji ? undefined : emoji;
+    const { nextSerialized, addedEmoji } = toggleUserReaction(
+      msg.react,
+      userLower,
+      emoji,
+      msg.sender
+    );
     soundFX.playPop();
-    if (nextReact === '❤️' && burstPoint) {
+    if (addedEmoji === '❤️' && burstPoint) {
       onHeartBurstAt?.(burstPoint.x, burstPoint.y);
       setShakingBubbleId(msg.id);
       setTimeout(() => setShakingBubbleId(null), 500);
     }
     setActiveBubbleMenu(null);
     setReactTargetMsg(null);
+    if (!nextSerialized && reactionDetailMsgId === msg.id) {
+      setReactionDetailMsgId(null);
+    }
 
     setChats((prev) =>
-      prev.map((m) => (m.id === msg.id ? { ...m, react: nextReact } : m))
+      prev.map((m) => (m.id === msg.id ? { ...m, react: nextSerialized } : m))
     );
 
-    const updated = await updateNobarChatReact(msg.id, nextReact);
+    const updated = await updateNobarChatReact(msg.id, nextSerialized);
     if (updated.length > 0) {
       setChats(updated);
     }
@@ -1321,24 +1337,17 @@ export const NobarView: React.FC<NobarViewProps> = ({
                       ))}
                   </div>
 
-                  {msg.react && !msg.is_deleted && (
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        const rect = e.currentTarget.getBoundingClientRect();
-                        void applyNobarReaction(msg, msg.react!, {
-                          x: rect.left + rect.width / 2,
-                          y: rect.top + rect.height / 2,
-                        });
+                  {!msg.is_deleted && (
+                    <ReactionPill
+                      rawReact={msg.react}
+                      msgSender={msg.sender}
+                      isMine={isMine}
+                      onClick={() => {
+                        soundFX.playClick();
+                        setActiveBubbleMenu(null);
+                        setReactionDetailMsgId(msg.id);
                       }}
-                      title="Tap untuk hapus react"
-                      className={`absolute -bottom-2.5 ${
-                        isMine ? 'left-2' : 'right-2'
-                      } flex items-center justify-center rounded-full border border-[#FFD6E7] bg-white px-1.5 py-0.5 text-[11px] shadow cursor-pointer`}
-                    >
-                      <AppleEmoji emoji={msg.react} size={15} />
-                    </button>
+                    />
                   )}
                 </div>
 
@@ -1362,26 +1371,29 @@ export const NobarView: React.FC<NobarViewProps> = ({
                     }`}
                   >
                     <div className="flex flex-wrap items-center gap-1">
-                      {QUICK_REACT_EMOJIS.map((em) => (
-                        <button
-                          key={em}
-                          type="button"
-                          onClick={(e) => {
-                            const rect = e.currentTarget.getBoundingClientRect();
-                            void applyNobarReaction(msg, em, {
-                              x: rect.left + rect.width / 2,
-                              y: rect.top + rect.height / 2,
-                            });
-                          }}
-                          className={`flex h-8 w-8 items-center justify-center rounded-full text-sm transition-transform active:scale-90 cursor-pointer ${
-                            msg.react === em
-                              ? 'bg-[#FFE3EE] ring-1 ring-[#FF2E7E]'
-                              : 'bg-[#FFF5F9]'
-                          }`}
-                        >
-                          <AppleEmoji emoji={em} size={19} />
-                        </button>
-                      ))}
+                      {QUICK_REACT_EMOJIS.map((em) => {
+                        const myReact = getUserReaction(msg.react, userLower, msg.sender);
+                        return (
+                          <button
+                            key={em}
+                            type="button"
+                            onClick={(e) => {
+                              const rect = e.currentTarget.getBoundingClientRect();
+                              void applyNobarReaction(msg, em, {
+                                x: rect.left + rect.width / 2,
+                                y: rect.top + rect.height / 2,
+                              });
+                            }}
+                            className={`flex h-8 w-8 items-center justify-center rounded-full text-sm transition-transform active:scale-90 cursor-pointer ${
+                              myReact === em
+                                ? 'bg-[#FFE3EE] ring-1 ring-[#FF2E7E]'
+                                : 'bg-[#FFF5F9]'
+                            }`}
+                          >
+                            <AppleEmoji emoji={em} size={19} />
+                          </button>
+                        );
+                      })}
                       <button
                         type="button"
                         onClick={() => {
@@ -1536,17 +1548,23 @@ export const NobarView: React.FC<NobarViewProps> = ({
                   <AppleTextWithEmojis text={reactTargetMsg.message} emojiSize={14} />
                 </p>
               </div>
-              {reactTargetMsg.react && (
-                <button
-                  type="button"
-                  onClick={() =>
-                    void applyNobarReaction(reactTargetMsg, reactTargetMsg.react!)
-                  }
-                  className="mr-1.5 shrink-0 rounded-full border border-rose-200 bg-rose-50 px-2.5 py-1 text-[10px] font-extrabold text-rose-600 cursor-pointer"
-                >
-                  Hapus react
-                </button>
-              )}
+              {(() => {
+                const myReact = getUserReaction(
+                  reactTargetMsg.react,
+                  userLower,
+                  reactTargetMsg.sender
+                );
+                if (!myReact) return null;
+                return (
+                  <button
+                    type="button"
+                    onClick={() => void applyNobarReaction(reactTargetMsg, myReact)}
+                    className="mr-1.5 shrink-0 rounded-full border border-rose-200 bg-rose-50 px-2.5 py-1 text-[10px] font-extrabold text-rose-600 cursor-pointer"
+                  >
+                    Hapus react
+                  </button>
+                );
+              })()}
               <button
                 type="button"
                 onClick={() => setReactTargetMsg(null)}
@@ -1569,6 +1587,34 @@ export const NobarView: React.FC<NobarViewProps> = ({
           </div>
         </div>
       )}
+
+      {/* Reaction Details Modal (WhatsApp / Telegram style: see who reacted) */}
+      {(() => {
+        const detailMsg = reactionDetailMsgId
+          ? chats.find((m) => m.id === reactionDetailMsgId)
+          : undefined;
+        if (
+          !detailMsg ||
+          getReactionEntries(detailMsg.react, detailMsg.sender).length === 0
+        ) {
+          return null;
+        }
+        return (
+          <ReactionDetailsModal
+            msg={detailMsg}
+            currentUser={userLower}
+            profile={profile}
+            onToggleMyReaction={(emoji, pt) =>
+              void applyNobarReaction(detailMsg, emoji, pt)
+            }
+            onOpenFullPicker={() => {
+              setReactionDetailMsgId(null);
+              setReactTargetMsg(detailMsg);
+            }}
+            onClose={() => setReactionDetailMsgId(null)}
+          />
+        );
+      })()}
 
       {/* Nobar Chat Wallpaper Picker Modal */}
       {showWallpaperModal && (
