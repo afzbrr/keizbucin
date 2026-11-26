@@ -1552,7 +1552,9 @@ export default function App() {
                   <GameView
                     currentUser={currentUser}
                     partnerInGame={partnerInGame}
+                    profile={profile}
                     onRoomMembersChange={setGameMembers}
+                    onHeartBurstAt={handleHeartBurstAt}
                     onBack={() => openSection('home')}
                   />
                 )}

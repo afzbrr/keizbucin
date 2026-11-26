@@ -358,3 +358,59 @@
 ::-webkit-scrollbar { width: 4px; height: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: rgba(255, 46, 126, 0.22); border-radius: 9999px; }
+
+/* GAME ULAR TANGGA - BARU */
+@keyframes utDiceSpin {
+  0% { transform: scale(1) rotate(0deg); }
+  25% { transform: scale(1.1) rotate(-12deg); }
+  50% { transform: scale(0.96) rotate(12deg); }
+  75% { transform: scale(1.08) rotate(-8deg); }
+  100% { transform: scale(1) rotate(0deg); }
+}
+
+@keyframes utConfettiDrop {
+  0% { transform: translate3d(0, -20px, 0) rotate(0deg); opacity: 1; }
+  100% { transform: translate3d(0, 380px, 0) rotate(540deg); opacity: 0; }
+}
+
+@keyframes utPieceHop {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+  45% { transform: translate3d(0, -8px, 0) scale(1.15); }
+}
+
+.ut-dice-rolling {
+  animation: utDiceSpin 0.4s ease-in-out infinite;
+  will-change: transform;
+}
+
+.ut-confetti-piece {
+  animation: utConfettiDrop linear infinite;
+  will-change: transform, opacity;
+}
+
+.ut-token-move {
+  transition: transform 0.36s cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: transform;
+}
+
+.ut-piece-hopping {
+  animation: utPieceHop 0.34s cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: transform;
+}
+
+/* LUDO KING - BARU */
+@keyframes ludoSelectablePulse {
+  0%, 100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(255, 46, 126, 0.7); }
+  50% { transform: scale(1.16); box-shadow: 0 0 0 6px rgba(255, 46, 126, 0); }
+}
+
+.ludo-token-move {
+  transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: transform;
+}
+
+.ludo-piece-selectable {
+  animation: ludoSelectablePulse 0.9s ease-in-out infinite;
+  will-change: transform;
+}
+
