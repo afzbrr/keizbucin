@@ -94,6 +94,11 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const [previewPhotoMsg, setPreviewPhotoMsg] = useState<ChatMessage | null>(null);
   const [savingPhoto, setSavingPhoto] = useState(false);
   const [copiedToast, setCopiedToast] = useState<string | null>(null);
+  const [pendingPhoto, setPendingPhoto] = useState<{
+    previewUrl: string;
+    remoteUrl?: string;
+    uploading: boolean;
+  } | null>(null);
   const [wallpaperCfg, setWallpaperCfg] = useState<SavedWallpaperConfig>(() =>
     loadSavedWallpaper()
   );
@@ -137,6 +142,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
   }, [activeBubbleMenu, showPlusMenu, showInputEmojiPicker]);
 
   const listEndRef = useRef<HTMLDivElement | null>(null);
+  const inputFieldRef = useRef<HTMLInputElement | null>(null);
   const touchStartX = useRef<number | null>(null);
   const touchStartY = useRef<number | null>(null);
   const longPressTimer = useRef<number | null>(null);
@@ -212,6 +218,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
           (s === partnerRole && r === userLower);
         if (
           !isPair ||
+          inserted.is_deleted ||
           (inserted.type !== 'text' &&
             inserted.type !== 'image' &&
             inserted.type !== 'voice') ||
@@ -242,6 +249,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
             updated.type !== 'voice') ||
           updated.message.startsWith('[Unek-Unek]')
         ) {
+          return;
+        }
+        if (updated.is_deleted) {
+          setMessages((prev) => prev.filter((m) => m.id !== updated.id));
           return;
         }
         setMessages((prev) =>
@@ -371,13 +382,39 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
   const handleSend = async (textOverride?: string, extra?: Partial<ChatMessage>) => {
     const text = (textOverride ?? input).trim();
-    if (!text && !extra?.image_url && !extra?.voice_url) return;
+    const attachedPhoto = !textOverride && !extra?.image_url ? pendingPhoto : null;
+
+    if (attachedPhoto?.uploading) {
+      setCopiedToast('Tunggu sebentar, foto lagi disiapin...');
+      setTimeout(() => setCopiedToast(null), 1800);
+      return;
+    }
+
+    const effectiveExtra: Partial<ChatMessage> = {
+      ...extra,
+      ...(attachedPhoto?.remoteUrl
+        ? {
+            type: 'image',
+            image_url: attachedPhoto.remoteUrl,
+          }
+        : {}),
+    };
+
+    if (!text && !effectiveExtra.image_url && !effectiveExtra.voice_url) return;
+
+    if (attachedPhoto) {
+      if (attachedPhoto.previewUrl.startsWith('blob:')) {
+        URL.revokeObjectURL(attachedPhoto.previewUrl);
+      }
+      setPendingPhoto(null);
+    }
+
     if (!textOverride) setInput('');
     stopOwnTyping();
     soundFX.playPop();
 
     const payloadExtra: Partial<ChatMessage> = {
-      ...extra,
+      ...effectiveExtra,
       ...(replyingTo
         ? {
             reply_to: replyingTo.id,
@@ -572,13 +609,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
     if (previewPhotoMsg?.id === id) {
       setPreviewPhotoMsg(null);
     }
-    setMessages((prev) =>
-      prev.map((m) => (m.id === id ? { ...m, is_deleted: true } : m))
-    );
+    setMessages((prev) => prev.filter((m) => m.id !== id));
     const updated = await deleteChatMessage(id);
-    if (updated.length > 0) {
-      setMessages(updated);
-    }
+    setMessages(updated);
   };
 
   const handleSavePhoto = async (url: string) => {
@@ -625,20 +658,32 @@ export const ChatView: React.FC<ChatViewProps> = ({
       return;
     }
 
+    if (pendingPhoto?.previewUrl.startsWith('blob:')) {
+      URL.revokeObjectURL(pendingPhoto.previewUrl);
+    }
+
+    const localPreview = URL.createObjectURL(file);
     setShowPlusMenu(false);
-    setCopiedToast('lagi upload foto...');
+    setPendingPhoto({
+      previewUrl: localPreview,
+      uploading: true,
+    });
+    window.setTimeout(() => inputFieldRef.current?.focus(), 80);
+
     const uploaded = await uploadImageToKeizStorage(file, file.name, currentUser, 'chat');
     if (!uploaded.publicUrl) {
+      URL.revokeObjectURL(localPreview);
+      setPendingPhoto((cur) => (cur?.previewUrl === localPreview ? null : cur));
       setCopiedToast(uploaded.error || 'Gagal upload foto, coba lagi');
       setTimeout(() => setCopiedToast(null), 3200);
       return;
     }
 
-    setCopiedToast(null);
-    await handleSend('', {
-      type: 'image',
-      image_url: uploaded.publicUrl,
-    });
+    setPendingPhoto((cur) =>
+      cur && cur.previewUrl === localPreview
+        ? { ...cur, remoteUrl: uploaded.publicUrl!, uploading: false }
+        : cur
+    );
   };
 
   const handleVoiceToggle = () => {
@@ -845,7 +890,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
           </div>
         )}
 
-        {messages.map((msg) => {
+        {messages
+          .filter((msg) => !msg.is_deleted)
+          .map((msg) => {
           const isMine = msg.sender === currentUser;
           const isPurePhoto =
             !msg.is_deleted &&
@@ -1250,12 +1297,49 @@ export const ChatView: React.FC<ChatViewProps> = ({
             <p className="text-[10px] font-extrabold text-[#E91E7A]">
               Membalas {replyingTo.sender === 'faiz' ? 'faiz' : 'kenat'}
             </p>
-            <p className="truncate text-[#8A6A7A]">{replyingTo.message}</p>
+            <p className="truncate text-[#8A6A7A]">{replyingTo.message || 'Foto'}</p>
           </div>
           <button
             type="button"
             onClick={() => setReplyingTo(null)}
             className="ml-2 flex h-7 w-7 items-center justify-center rounded-full bg-[#FFF2F7] text-[#8A6A7A] cursor-pointer"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
+
+      {/* Pending Photo Preview (bisa langsung ketik chat sebelum kirim foto!) */}
+      {pendingPhoto && (
+        <div
+          data-chat-input-area="true"
+          className="animate-bubble-pop flex shrink-0 items-center justify-between gap-2.5 rounded-2xl border border-[#FFD6E7] bg-white px-3 py-2 shadow-sm"
+        >
+          <div className="flex min-w-0 items-center gap-2.5">
+            <img
+              src={pendingPhoto.previewUrl}
+              alt="Foto mau dikirim"
+              className="h-12 w-12 shrink-0 rounded-xl border border-[#FFD6E7] object-cover"
+            />
+            <div className="min-w-0">
+              <p className="truncate text-xs font-extrabold text-[#2D0A1E]">
+                {pendingPhoto.uploading ? 'Lagi siapin foto...' : 'Foto siap dikirim'}
+              </p>
+              <p className="truncate text-[10px] font-semibold text-[#8A6A7A]">
+                Ketik pesan di bawah atau langsung kirim
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              if (pendingPhoto.previewUrl.startsWith('blob:')) {
+                URL.revokeObjectURL(pendingPhoto.previewUrl);
+              }
+              setPendingPhoto(null);
+            }}
+            aria-label="Batalkan foto"
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[#FFF2F7] text-[#8A6A7A] cursor-pointer"
           >
             <X className="h-3.5 w-3.5" />
           </button>
@@ -1354,23 +1438,28 @@ export const ChatView: React.FC<ChatViewProps> = ({
         </button>
 
         <input
+          ref={inputFieldRef}
           type="text"
           value={input}
           onChange={(e) => handleInputChange(e.target.value)}
           onBlur={stopOwnTyping}
           placeholder={
-            currentUser === 'faiz' ? 'ketik buat kenat...' : 'ketik buat faiz...'
+            pendingPhoto
+              ? 'tambahin tulisan buat fotonya...'
+              : currentUser === 'faiz'
+              ? 'ketik buat kenat...'
+              : 'ketik buat faiz...'
           }
           className="h-[48px] min-h-[48px] flex-1 rounded-full border border-[#FFD6E7] bg-white px-4 text-xs font-semibold text-[#2D0A1E] placeholder-[#9A7A8A] focus:border-[#FF2E7E] focus:outline-none"
         />
 
-        {input.trim() ? (
+        {input.trim() || pendingPhoto ? (
           <button
             type="submit"
             aria-label="Kirim chat"
             className={`btn-bucin flex h-[48px] w-[48px] shrink-0 items-center justify-center rounded-full text-white shadow-md cursor-pointer ${
-              currentUser === 'faiz' ? 'bg-[#3B82F6]' : 'bg-[#FF4D8D]'
-            }`}
+              pendingPhoto?.uploading ? 'opacity-70' : ''
+            } ${currentUser === 'faiz' ? 'bg-[#3B82F6]' : 'bg-[#FF4D8D]'}`}
           >
             <Send className="h-4 w-4" />
           </button>

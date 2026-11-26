@@ -1815,6 +1815,7 @@ export async function fetchChats(currentUser?: Role): Promise<ChatMessage[]> {
       ? data
           .map((row, idx) => mapChatRow(row as Record<string, unknown>, idx))
           .filter((m) => {
+            if (m.is_deleted) return false;
             const s = m.sender.toLowerCase();
             const r = m.receiver.toLowerCase();
             const isValidType =
@@ -2096,33 +2097,19 @@ export async function deleteChatMessage(id: string): Promise<ChatMessage[]> {
   const sb = activeClient;
   if (sb) {
     try {
-      const schema = await discoverChatSchema(sb);
-      if (schema && !schema.columns.has('is_deleted')) {
-        const { error } = await sb.from(CHAT_TABLE).delete().eq('id', id);
-        if (error) {
-          console.log(
-            '[KEIZ Chat delete error]',
-            error,
-            error.message,
-            error.details,
-            error.hint,
-            error.code
-          );
-        }
-      } else {
-        const { error } = await sb
-          .from(CHAT_TABLE)
-          .update({ is_deleted: true })
-          .eq('id', id);
-        if (error) {
-          console.log(
-            '[KEIZ Chat soft-delete error]',
-            error,
-            error.message,
-            error.details,
-            error.hint,
-            error.code
-          );
+      const { error: delErr } = await sb.from(CHAT_TABLE).delete().eq('id', id);
+      if (delErr) {
+        console.log(
+          '[KEIZ Chat delete error]',
+          delErr,
+          delErr.message,
+          delErr.details,
+          delErr.hint,
+          delErr.code
+        );
+        const schema = await discoverChatSchema(sb);
+        if (!schema || schema.columns.has('is_deleted')) {
+          await sb.from(CHAT_TABLE).update({ is_deleted: true }).eq('id', id);
         }
       }
     } catch (err) {
@@ -2237,7 +2224,7 @@ export async function fetchNobarChats(currentUser?: Role): Promise<ChatMessage[]
       ? data
           .map((row, idx) => mapChatRow(row as Record<string, unknown>, idx))
           .filter((m) => {
-            if (m.type !== 'nobar_chat') return false;
+            if (m.type !== 'nobar_chat' || m.is_deleted) return false;
             const s = m.sender.toLowerCase();
             const r = m.receiver.toLowerCase();
             if (userLower && partnerLower) {
@@ -2315,14 +2302,12 @@ export async function deleteNobarChatMessage(id: string): Promise<ChatMessage[]>
   const sb = activeClient;
   if (sb) {
     try {
-      const schema = await discoverChatSchema(sb);
-      if (schema && !schema.columns.has('is_deleted')) {
-        await sb.from(CHAT_TABLE).delete().eq('id', id);
-      } else {
-        await sb
-          .from(CHAT_TABLE)
-          .update({ is_deleted: true })
-          .eq('id', id);
+      const { error: delErr } = await sb.from(CHAT_TABLE).delete().eq('id', id);
+      if (delErr) {
+        const schema = await discoverChatSchema(sb);
+        if (!schema || schema.columns.has('is_deleted')) {
+          await sb.from(CHAT_TABLE).update({ is_deleted: true }).eq('id', id);
+        }
       }
     } catch {
       // ignore

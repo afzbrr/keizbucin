@@ -334,13 +334,17 @@ export const NobarView: React.FC<NobarViewProps> = ({
         const isPair =
           (s === userLower && r === partnerRole) ||
           (s === partnerRole && r === userLower);
-        if (!isPair || inserted.type !== 'nobar_chat') return;
+        if (!isPair || inserted.type !== 'nobar_chat' || inserted.is_deleted) return;
         setChats((prev) =>
           prev.some((m) => m.id === inserted.id) ? prev : [...prev, inserted]
         );
       },
       (updated) => {
         if (updated.type !== 'nobar_chat') return;
+        if (updated.is_deleted) {
+          setChats((prev) => prev.filter((m) => m.id !== updated.id));
+          return;
+        }
         setChats((prev) =>
           prev.map((m) => (m.id === updated.id ? updated : m))
         );
@@ -853,13 +857,9 @@ export const NobarView: React.FC<NobarViewProps> = ({
   const handleDeleteNobarChat = async (id: string) => {
     soundFX.playClick();
     setActiveBubbleMenu(null);
-    setChats((prev) =>
-      prev.map((m) => (m.id === id ? { ...m, is_deleted: true } : m))
-    );
+    setChats((prev) => prev.filter((m) => m.id !== id));
     const updated = await deleteNobarChatMessage(id);
-    if (updated.length > 0) {
-      setChats(updated);
-    }
+    setChats(updated);
   };
 
   const handlePickerReactSelect = async (emojiData: EmojiClickData, event: MouseEvent) => {
@@ -1184,7 +1184,9 @@ export const NobarView: React.FC<NobarViewProps> = ({
             </div>
           )}
 
-          {chats.map((msg) => {
+          {chats
+            .filter((msg) => !msg.is_deleted)
+            .map((msg) => {
             const isMine = msg.sender === currentUser;
             const bubbleColor = msg.is_deleted
               ? 'bg-slate-200 !text-slate-500'
