@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  Cake,
   ChevronRight,
   Film,
   Heart,
@@ -184,6 +185,42 @@ function computeRelationshipStats(now: Date) {
     countdownSubline,
     progressPercent,
     progressLabel,
+  };
+}
+
+function computeBirthdayInfo(
+  birthYear: number,
+  monthIndex: number,
+  day: number,
+  now: Date
+) {
+  const y = now.getFullYear();
+  const m = now.getMonth();
+  const d = now.getDate();
+  const todayUtc = Date.UTC(y, m, d);
+
+  const dayStr = day < 10 ? `0${day}` : `${day}`;
+  const dateLabel = `${dayStr} ${NAMA_BULAN_ID[monthIndex]} ${birthYear}`;
+
+  if (m === monthIndex && d === day) {
+    const turningAge = y - birthYear;
+    return {
+      dateLabel,
+      countdownText: `hari ini ultah ke-${turningAge}!`,
+      isToday: true,
+    };
+  }
+
+  const targetYear =
+    m > monthIndex || (m === monthIndex && d > day) ? y + 1 : y;
+  const targetUtc = Date.UTC(targetYear, monthIndex, day);
+  const daysLeft = Math.max(0, Math.round((targetUtc - todayUtc) / 86400000));
+  const turningAge = targetYear - birthYear;
+
+  return {
+    dateLabel,
+    countdownText: `${daysLeft} hari lagi · ultah ke-${turningAge}`,
+    isToday: false,
   };
 }
 
@@ -741,6 +778,8 @@ export default function App() {
     partnerPresenceDisplay.isInGame || gameMembers.includes(partnerRole);
 
   const relationshipStats = computeRelationshipStats(todayTick);
+  const kenatBirthday = computeBirthdayInfo(2005, 0, 7, todayTick);
+  const faizBirthday = computeBirthdayInfo(2005, 2, 18, todayTick);
 
   const handleJoinPartnerNobar = () => {
     setNobarJoinSignal(Date.now());
@@ -1359,6 +1398,37 @@ export default function App() {
                       className="h-full rounded-full bg-gradient-to-r from-[#FF2E7E] to-[#FF7AB8] transition-all duration-500"
                       style={{ width: `${relationshipStats.progressPercent}%` }}
                     />
+                  </div>
+                </div>
+
+                {/* Birthday Kenat & Faiz */}
+                <div className="mt-3 border-t border-[#FFE3EE] pt-3">
+                  <div className="grid grid-cols-2 gap-2.5">
+                    <div className="rounded-2xl border border-[#FFD6E7] bg-[#FFF2F7] p-3">
+                      <div className="flex items-center gap-1.5 text-[11px] font-bold text-[#8A6A7A]">
+                        <Cake className="h-3.5 w-3.5 shrink-0 text-[#FF4D8D]" />
+                        <span>birthday kenat</span>
+                      </div>
+                      <p className="font-display mt-1 text-[14px] font-extrabold leading-tight text-[#D81B6E]">
+                        {kenatBirthday.dateLabel}
+                      </p>
+                      <p className="mt-0.5 text-[11px] font-semibold leading-snug text-[#5C3A49]">
+                        {kenatBirthday.countdownText}
+                      </p>
+                    </div>
+
+                    <div className="rounded-2xl border border-[#BFDBFE] bg-[#EFF6FF] p-3">
+                      <div className="flex items-center gap-1.5 text-[11px] font-bold text-[#64748B]">
+                        <Cake className="h-3.5 w-3.5 shrink-0 text-[#3B82F6]" />
+                        <span>birthday faiz</span>
+                      </div>
+                      <p className="font-display mt-1 text-[14px] font-extrabold leading-tight text-[#2563EB]">
+                        {faizBirthday.dateLabel}
+                      </p>
+                      <p className="mt-0.5 text-[11px] font-semibold leading-snug text-[#334155]">
+                        {faizBirthday.countdownText}
+                      </p>
+                    </div>
                   </div>
                 </div>
               </div>
