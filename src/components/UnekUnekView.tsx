@@ -8,6 +8,7 @@ import {
   subscribeRealtime,
 } from '../supabaseClient';
 import { soundFX } from '../sound';
+import { AppleTextWithEmojis } from './AppleEmoji';
 import type { Role, UnekItem } from '../types';
 
 const MOOD_OPTIONS = ['Kangen', 'Senang', 'Kesel', 'Capek', 'Sayang'] as const;
@@ -295,7 +296,7 @@ export const UnekUnekView: React.FC<UnekUnekViewProps> = ({
                 )}
 
                 <p className="mt-2 text-[13px] font-semibold leading-relaxed text-[#2D0A1E]">
-                  {item.text}
+                  <AppleTextWithEmojis text={item.text} emojiSize={17} />
                 </p>
 
                 {/* Manual Reply Display */}
@@ -303,7 +304,7 @@ export const UnekUnekView: React.FC<UnekUnekViewProps> = ({
                   <div className="mt-2.5 rounded-2xl border border-[#FFD6E7] bg-[#FFF2F7] px-3 py-2 text-xs font-semibold text-[#2D0A1E]">
                     <p>
                       <span className="font-extrabold text-[#E91E7A]">Balasan: </span>
-                      {item.reply}
+                      <AppleTextWithEmojis text={item.reply} emojiSize={16} />
                     </p>
                     <p className="mt-0.5 text-[10px] font-extrabold text-[#8A6A7A]">
                       — {replierName}

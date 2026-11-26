@@ -16,6 +16,7 @@ import {
   VolumeX,
   X,
 } from 'lucide-react';
+import { AppleTextWithEmojis } from './components/AppleEmoji';
 import { CallOverlay } from './components/CallOverlay';
 import { ChatView } from './components/ChatView';
 import {
@@ -1378,7 +1379,7 @@ export default function App() {
                       menuju tanggal 28
                     </p>
                     <p className="font-display mt-1 text-[18px] font-extrabold leading-tight text-[#2D0A1E]">
-                      {relationshipStats.countdownHeadline}
+                      <AppleTextWithEmojis text={relationshipStats.countdownHeadline} emojiSize={18} />
                     </p>
                     <p className="mt-0.5 text-[11px] font-semibold leading-snug text-[#5C3A49]">
                       {relationshipStats.countdownSubline}

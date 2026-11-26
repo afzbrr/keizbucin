@@ -72,7 +72,9 @@ export type ChatMessageType =
   | 'sticker'
   | 'nobar_link'
   | 'music_link'
-  | 'nobar_chat';
+  | 'nobar_chat'
+  | 'wallpaper_chat'
+  | 'wallpaper_nobar';
 
 export interface ChatMessage {
   id: string;

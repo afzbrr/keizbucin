@@ -34,16 +34,19 @@ import {
   getConnectionStatus,
   isPresenceOnline,
   markChatsAsRead,
+  saveRoomWallpaper,
   sendChatMessage,
   sendTypingBroadcast,
   subscribeChatRealtime,
   subscribeConnectionStatus,
+  subscribeRoomWallpaper,
   subscribeTypingBroadcast,
   updateChatReact,
   uploadImageToKeizStorage,
 } from '../supabaseClient';
 import { soundFX } from '../sound';
 import { SupabaseConfigCard } from './SupabaseConfigCard';
+import { AppleEmoji, AppleTextWithEmojis, QUICK_REACT_EMOJIS } from './AppleEmoji';
 import {
   ChatWallpaperModal,
   getWallpaperCss,
@@ -113,6 +116,14 @@ export const ChatView: React.FC<ChatViewProps> = ({
     });
     void checkSupabaseConnection();
     return unsub;
+  }, []);
+
+  // Sync wallpaper Chat Biasa berdua secara real-time via Supabase
+  useEffect(() => {
+    return subscribeRoomWallpaper('chat', (remote) => {
+      setWallpaperCfg(remote);
+      saveWallpaperConfig(remote);
+    });
   }, []);
 
   useEffect(() => {
@@ -1018,9 +1029,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
                       title="Tap untuk hapus react"
                       className={`absolute -bottom-2.5 ${
                         isMine ? 'left-2' : 'right-2'
-                      } rounded-full border border-[#FFD6E7] bg-white px-1.5 py-0.5 text-xs shadow cursor-pointer`}
+                      } flex items-center justify-center rounded-full border border-[#FFD6E7] bg-white px-1.5 py-0.5 text-xs shadow cursor-pointer`}
                     >
-                      {msg.react}
+                      <AppleEmoji emoji={msg.react} size={15} />
                     </button>
                   )}
                 </div>
@@ -1060,7 +1071,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
                           <p className="font-extrabold opacity-90">
                             {msg.reply_to_sender === 'faiz' ? 'faiz' : 'kenat'}
                           </p>
-                          <p className="line-clamp-1 opacity-85">{msg.reply_to_text}</p>
+                          <p className="line-clamp-1 opacity-85">
+                            <AppleTextWithEmojis text={msg.reply_to_text} emojiSize={13} />
+                          </p>
                         </div>
                       )}
 
@@ -1098,7 +1111,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
                           </span>
                         </button>
                       ) : msg.message.trim() ? (
-                        <span>{msg.message}</span>
+                        <span>
+                          <AppleTextWithEmojis text={msg.message} emojiSize={18} />
+                        </span>
                       ) : null}
                     </>
                   )}
@@ -1129,9 +1144,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
                       title="Tap untuk hapus react"
                       className={`absolute -bottom-2.5 ${
                         isMine ? 'left-2' : 'right-2'
-                      } rounded-full border border-[#FFD6E7] bg-white px-1.5 py-0.5 text-xs shadow cursor-pointer`}
+                      } flex items-center justify-center rounded-full border border-[#FFD6E7] bg-white px-1.5 py-0.5 text-xs shadow cursor-pointer`}
                     >
-                      {msg.react}
+                      <AppleEmoji emoji={msg.react} size={15} />
                     </button>
                   )}
                 </div>
@@ -1165,7 +1180,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   }`}
                 >
                   <div className="flex flex-wrap items-center gap-1">
-                    {['❤️', '😂', '😍', '🥺', '😭', '👍'].map((em) => (
+                    {QUICK_REACT_EMOJIS.map((em) => (
                       <button
                         key={em}
                         type="button"
@@ -1176,11 +1191,11 @@ export const ChatView: React.FC<ChatViewProps> = ({
                             y: rect.top + rect.height / 2,
                           });
                         }}
-                        className={`flex h-7 w-7 items-center justify-center rounded-full text-sm transition-transform active:scale-90 cursor-pointer ${
+                        className={`flex h-8 w-8 items-center justify-center rounded-full text-sm transition-transform active:scale-90 cursor-pointer ${
                           msg.react === em ? 'bg-[#FFE3EE] ring-1 ring-[#FF2E7E]' : 'bg-[#FFF5F9]'
                         }`}
                       >
-                        {em}
+                        <AppleEmoji emoji={em} size={20} />
                       </button>
                     ))}
                     <button
@@ -1297,7 +1312,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
             <p className="text-[10px] font-extrabold text-[#E91E7A]">
               Membalas {replyingTo.sender === 'faiz' ? 'faiz' : 'kenat'}
             </p>
-            <p className="truncate text-[#8A6A7A]">{replyingTo.message || 'Foto'}</p>
+            <p className="truncate text-[#8A6A7A]">
+              <AppleTextWithEmojis text={replyingTo.message || 'Foto'} emojiSize={14} />
+            </p>
           </div>
           <button
             type="button"
@@ -1389,7 +1406,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
             width="100%"
             height={300}
             searchPlaceholder="Cari emot..."
-            emojiStyle={EmojiStyle.NATIVE}
+            emojiStyle={EmojiStyle.APPLE}
             theme={Theme.LIGHT}
             lazyLoadEmojis
             previewConfig={{ showPreview: false }}
@@ -1497,7 +1514,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   Pilih react emot
                 </p>
                 <p className="truncate text-[11px] font-semibold text-[#8A6A7A]">
-                  {reactTargetMsg.message || 'Foto / Voice note'}
+                  <AppleTextWithEmojis
+                    text={reactTargetMsg.message || 'Foto / Voice note'}
+                    emojiSize={14}
+                  />
                 </p>
               </div>
               {reactTargetMsg.react && (
@@ -1524,7 +1544,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
               width="100%"
               height={360}
               searchPlaceholder="Cari emot..."
-              emojiStyle={EmojiStyle.NATIVE}
+              emojiStyle={EmojiStyle.APPLE}
               theme={Theme.LIGHT}
               lazyLoadEmojis
               previewConfig={{ showPreview: false }}
@@ -1601,7 +1621,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
               onClick={(e) => e.stopPropagation()}
               className="shrink-0 pb-2 text-center text-xs font-semibold text-white/90"
             >
-              {previewPhotoMsg.message}
+              <AppleTextWithEmojis text={previewPhotoMsg.message} emojiSize={16} />
             </p>
           ) : (
             <div className="h-2 shrink-0" />
@@ -1616,6 +1636,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
           onSelect={(next) => {
             setWallpaperCfg(next);
             saveWallpaperConfig(next);
+            void saveRoomWallpaper('chat', currentUser, next);
           }}
           onClose={() => setShowWallpaperModal(false)}
         />

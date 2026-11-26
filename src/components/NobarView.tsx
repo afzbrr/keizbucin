@@ -30,13 +30,16 @@ import {
   fetchNobarSync,
   isPresenceOnline,
   parseYouTubeUrl,
+  saveRoomWallpaper,
   sendNobarChatMessage,
   subscribeNobarChannel,
   subscribeNobarChatRealtime,
+  subscribeRoomWallpaper,
   updateNobarChatReact,
   upsertNobarSync,
 } from '../supabaseClient';
 import { soundFX } from '../sound';
+import { AppleEmoji, AppleTextWithEmojis, QUICK_REACT_EMOJIS } from './AppleEmoji';
 import {
   ChatWallpaperModal,
   DEFAULT_NOBAR_WALLPAPER_ID,
@@ -309,6 +312,14 @@ export const NobarView: React.FC<NobarViewProps> = ({
       unsubNobar();
     };
   }, [currentUser, joinSignal]);
+
+  // Sync wallpaper Chat Nobar berdua secara real-time via Supabase
+  useEffect(() => {
+    return subscribeRoomWallpaper('nobar', (remote) => {
+      setWallpaperCfg(remote);
+      saveWallpaperConfig(remote, NOBAR_WALLPAPER_STORAGE_KEY);
+    });
+  }, []);
 
   // Sync Chat Nobar Berdua (terpisah dari Chat Biasa) via Supabase Realtime + Broadcast + 2s poll
   const loadNobarChats = async () => {
@@ -1284,10 +1295,14 @@ export const NobarView: React.FC<NobarViewProps> = ({
                           <p className="font-extrabold opacity-90">
                             {msg.reply_to_sender === 'faiz' ? 'faiz' : 'kenat'}
                           </p>
-                          <p className="line-clamp-1 opacity-85">{msg.reply_to_text}</p>
+                          <p className="line-clamp-1 opacity-85">
+                            <AppleTextWithEmojis text={msg.reply_to_text} emojiSize={13} />
+                          </p>
                         </div>
                       )}
-                      <span>{msg.message}</span>
+                      <span>
+                        <AppleTextWithEmojis text={msg.message} emojiSize={17} />
+                      </span>
                     </>
                   )}
 
@@ -1320,9 +1335,9 @@ export const NobarView: React.FC<NobarViewProps> = ({
                       title="Tap untuk hapus react"
                       className={`absolute -bottom-2.5 ${
                         isMine ? 'left-2' : 'right-2'
-                      } rounded-full border border-[#FFD6E7] bg-white px-1.5 py-0.5 text-[11px] shadow cursor-pointer`}
+                      } flex items-center justify-center rounded-full border border-[#FFD6E7] bg-white px-1.5 py-0.5 text-[11px] shadow cursor-pointer`}
                     >
-                      {msg.react}
+                      <AppleEmoji emoji={msg.react} size={15} />
                     </button>
                   )}
                 </div>
@@ -1347,7 +1362,7 @@ export const NobarView: React.FC<NobarViewProps> = ({
                     }`}
                   >
                     <div className="flex flex-wrap items-center gap-1">
-                      {['❤️', '😂', '😍', '🥺', '😭', '👍'].map((em) => (
+                      {QUICK_REACT_EMOJIS.map((em) => (
                         <button
                           key={em}
                           type="button"
@@ -1358,13 +1373,13 @@ export const NobarView: React.FC<NobarViewProps> = ({
                               y: rect.top + rect.height / 2,
                             });
                           }}
-                          className={`flex h-7 w-7 items-center justify-center rounded-full text-sm transition-transform active:scale-90 cursor-pointer ${
+                          className={`flex h-8 w-8 items-center justify-center rounded-full text-sm transition-transform active:scale-90 cursor-pointer ${
                             msg.react === em
                               ? 'bg-[#FFE3EE] ring-1 ring-[#FF2E7E]'
                               : 'bg-[#FFF5F9]'
                           }`}
                         >
-                          {em}
+                          <AppleEmoji emoji={em} size={19} />
                         </button>
                       ))}
                       <button
@@ -1427,7 +1442,9 @@ export const NobarView: React.FC<NobarViewProps> = ({
               <p className="text-[10px] font-extrabold text-[#E91E7A]">
                 Membalas {replyingTo.sender === 'faiz' ? 'faiz' : 'kenat'}
               </p>
-              <p className="truncate text-[#8A6A7A]">{replyingTo.message}</p>
+              <p className="truncate text-[#8A6A7A]">
+                <AppleTextWithEmojis text={replyingTo.message} emojiSize={14} />
+              </p>
             </div>
             <button
               type="button"
@@ -1449,7 +1466,7 @@ export const NobarView: React.FC<NobarViewProps> = ({
               width="100%"
               height={220}
               searchPlaceholder="Cari emot..."
-              emojiStyle={EmojiStyle.NATIVE}
+              emojiStyle={EmojiStyle.APPLE}
               theme={Theme.LIGHT}
               lazyLoadEmojis
               previewConfig={{ showPreview: false }}
@@ -1516,7 +1533,7 @@ export const NobarView: React.FC<NobarViewProps> = ({
                   Pilih react emot
                 </p>
                 <p className="truncate text-[11px] font-semibold text-[#8A6A7A]">
-                  {reactTargetMsg.message}
+                  <AppleTextWithEmojis text={reactTargetMsg.message} emojiSize={14} />
                 </p>
               </div>
               {reactTargetMsg.react && (
@@ -1543,7 +1560,7 @@ export const NobarView: React.FC<NobarViewProps> = ({
               width="100%"
               height={340}
               searchPlaceholder="Cari emot..."
-              emojiStyle={EmojiStyle.NATIVE}
+              emojiStyle={EmojiStyle.APPLE}
               theme={Theme.LIGHT}
               lazyLoadEmojis
               previewConfig={{ showPreview: false }}
@@ -1563,6 +1580,7 @@ export const NobarView: React.FC<NobarViewProps> = ({
           onSelect={(next) => {
             setWallpaperCfg(next);
             saveWallpaperConfig(next, NOBAR_WALLPAPER_STORAGE_KEY);
+            void saveRoomWallpaper('nobar', currentUser, next);
           }}
           onClose={() => setShowWallpaperModal(false)}
         />

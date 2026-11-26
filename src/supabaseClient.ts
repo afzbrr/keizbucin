@@ -1719,6 +1719,8 @@ function mapChatRow(row: Record<string, unknown>, idx = 0): ChatMessage {
     'nobar_link',
     'music_link',
     'nobar_chat',
+    'wallpaper_chat',
+    'wallpaper_nobar',
   ]);
   const inferredType = validTypes.has(rawType)
     ? (rawType as ChatMessage['type'])
@@ -1767,7 +1769,7 @@ export async function fetchChats(currentUser?: Role): Promise<ChatMessage[]> {
     const hasTypeCol = !schema || schema.columns.has('type');
     let query = sb.from(CHAT_TABLE).select('*');
     if (hasTypeCol) {
-      query = query.or('type.is.null,type.neq.nobar_chat');
+      query = query.or('type.is.null,type.in.(text,image,voice)');
     }
     let { data, error } = await query
       .order('created_at', { ascending: true })
@@ -2403,6 +2405,247 @@ export function subscribeNobarChatRealtime(
       activeClient.removeChannel(nobarChatChan);
       if (activeNobarChatBroadcastChan === nobarChatChan) {
         activeNobarChatBroadcastChan = null;
+      }
+    }
+  };
+}
+
+// ---------- SHARED WALLPAPER SYNC (Chat Biasa & Chat Nobar, tersinkron real-time berdua) ----------
+export type WallpaperRoomKind = 'chat' | 'nobar';
+
+export interface SyncedWallpaperPayload {
+  mode: 'preset' | 'custom';
+  presetId: string;
+  customUrl?: string;
+}
+
+function wallpaperDbType(room: WallpaperRoomKind): 'wallpaper_chat' | 'wallpaper_nobar' {
+  return room === 'nobar' ? 'wallpaper_nobar' : 'wallpaper_chat';
+}
+
+function parseWallpaperRow(row: Record<string, unknown> | null | undefined): SyncedWallpaperPayload | null {
+  if (!row) return null;
+  const rawMsg = String(row.message ?? row.text ?? '').trim();
+  const imgUrl = row.image_url ? String(row.image_url).trim() : '';
+  if (rawMsg) {
+    try {
+      const parsed = JSON.parse(rawMsg) as Partial<SyncedWallpaperPayload>;
+      if (parsed.mode === 'custom' && (parsed.customUrl || imgUrl)) {
+        return {
+          mode: 'custom',
+          presetId: parsed.presetId || 'awan-pelangi',
+          customUrl: parsed.customUrl || imgUrl,
+        };
+      }
+      if (parsed.presetId) {
+        return {
+          mode: 'preset',
+          presetId: parsed.presetId,
+          customUrl: parsed.customUrl || (imgUrl || undefined),
+        };
+      }
+    } catch {
+      // ignore non-json
+    }
+  }
+  if (imgUrl) {
+    return {
+      mode: 'custom',
+      presetId: 'awan-pelangi',
+      customUrl: imgUrl,
+    };
+  }
+  return null;
+}
+
+const activeWallpaperChans: Partial<Record<WallpaperRoomKind, RealtimeChannel>> = {};
+const activeWallpaperChanReady: Partial<Record<WallpaperRoomKind, boolean>> = {};
+
+export async function fetchRoomWallpaper(
+  room: WallpaperRoomKind
+): Promise<SyncedWallpaperPayload | null> {
+  const sb = activeClient;
+  if (!sb) return null;
+  const dbType = wallpaperDbType(room);
+  try {
+    let { data, error } = await sb
+      .from(CHAT_TABLE)
+      .select('*')
+      .eq('type', dbType)
+      .order('created_at', { ascending: false })
+      .limit(1);
+
+    if (
+      error &&
+      (error.code === '42703' ||
+        error.code === 'PGRST204' ||
+        String(error.message || '').includes('created_at'))
+    ) {
+      const retry = await sb
+        .from(CHAT_TABLE)
+        .select('*')
+        .eq('type', dbType)
+        .limit(5);
+      data = retry.data;
+      error = retry.error;
+    }
+
+    if (error || !Array.isArray(data) || data.length === 0) return null;
+    return parseWallpaperRow(data[data.length > 1 ? data.length - 1 : 0] as Record<string, unknown>);
+  } catch {
+    return null;
+  }
+}
+
+export async function saveRoomWallpaper(
+  room: WallpaperRoomKind,
+  updatedBy: Role,
+  cfg: SyncedWallpaperPayload
+): Promise<void> {
+  localChannel?.postMessage({
+    type: 'wallpaper_sync_update',
+    room,
+    payload: cfg,
+  });
+
+  const chan = activeWallpaperChans[room];
+  if (chan && activeWallpaperChanReady[room]) {
+    chan
+      .send({
+        type: 'broadcast',
+        event: 'wallpaper_change',
+        payload: { room, cfg },
+      })
+      .catch(() => {});
+  }
+
+  const sb = activeClient;
+  if (!sb) return;
+
+  const dbType = wallpaperDbType(room);
+  const serialized = JSON.stringify({
+    mode: cfg.mode,
+    presetId: cfg.presetId,
+    ...(cfg.customUrl ? { customUrl: cfg.customUrl } : {}),
+  });
+
+  try {
+    const { data: existing } = await sb
+      .from(CHAT_TABLE)
+      .select('id')
+      .eq('type', dbType)
+      .order('created_at', { ascending: false })
+      .limit(1);
+
+    const existingId = Array.isArray(existing) && existing[0]?.id ? String(existing[0].id) : null;
+    if (existingId) {
+      const schema = await discoverChatSchema(sb);
+      const senderVal = formatSenderForDb(updatedBy, schema);
+      const { error: updErr } = await sb
+        .from(CHAT_TABLE)
+        .update({
+          sender: senderVal,
+          message: serialized,
+          image_url: cfg.customUrl ?? null,
+          created_at: new Date().toISOString(),
+        })
+        .eq('id', existingId);
+      if (!updErr) return;
+    }
+
+    await sendChatMessage(updatedBy, serialized, {
+      type: dbType,
+      image_url: cfg.customUrl,
+    });
+  } catch {
+    // ignore
+  }
+}
+
+export function subscribeRoomWallpaper(
+  room: WallpaperRoomKind,
+  onWallpaper: (cfg: SyncedWallpaperPayload) => void
+): () => void {
+  const dbType = wallpaperDbType(room);
+  let lastJson = '';
+
+  const emitIfChanged = (cfg: SyncedWallpaperPayload | null) => {
+    if (!cfg) return;
+    const key = JSON.stringify({
+      mode: cfg.mode,
+      presetId: cfg.presetId,
+      customUrl: cfg.customUrl || '',
+    });
+    if (key === lastJson) return;
+    lastJson = key;
+    onWallpaper(cfg);
+  };
+
+  const handleLocal = (ev: MessageEvent) => {
+    if (
+      ev.data?.type === 'wallpaper_sync_update' &&
+      ev.data.room === room &&
+      ev.data.payload
+    ) {
+      emitIfChanged(ev.data.payload as SyncedWallpaperPayload);
+    }
+  };
+  localChannel?.addEventListener('message', handleLocal);
+
+  let chan: RealtimeChannel | null = null;
+  const setup = () => {
+    const sb = activeClient;
+    activeWallpaperChanReady[room] = false;
+    if (chan && sb) {
+      sb.removeChannel(chan);
+      chan = null;
+      delete activeWallpaperChans[room];
+    }
+    if (!sb) return;
+    chan = sb
+      .channel(`keiz_wallpaper_rt_${room}`, {
+        config: { broadcast: { self: false } },
+      })
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: CHAT_TABLE },
+        (payload) => {
+          const row = payload.new as Record<string, unknown> | undefined;
+          if (!row || String(row.type ?? '') !== dbType) return;
+          emitIfChanged(parseWallpaperRow(row));
+        }
+      )
+      .on('broadcast', { event: 'wallpaper_change' }, ({ payload }) => {
+        const p = payload as
+          | { room?: WallpaperRoomKind; cfg?: SyncedWallpaperPayload }
+          | undefined;
+        if (p?.room === room && p.cfg) {
+          emitIfChanged(p.cfg);
+        }
+      })
+      .subscribe((status) => {
+        activeWallpaperChanReady[room] = status === 'SUBSCRIBED';
+      });
+    activeWallpaperChans[room] = chan;
+  };
+
+  setup();
+  const unsubReconfig = onSupabaseReconfigured(setup);
+
+  void fetchRoomWallpaper(room).then(emitIfChanged);
+  const pollTimer = window.setInterval(() => {
+    void fetchRoomWallpaper(room).then(emitIfChanged);
+  }, 3000);
+
+  return () => {
+    window.clearInterval(pollTimer);
+    unsubReconfig();
+    localChannel?.removeEventListener('message', handleLocal);
+    activeWallpaperChanReady[room] = false;
+    if (chan && activeClient) {
+      activeClient.removeChannel(chan);
+      if (activeWallpaperChans[room] === chan) {
+        delete activeWallpaperChans[room];
       }
     }
   };
