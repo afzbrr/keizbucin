@@ -24,6 +24,7 @@ import {
   PelukOverlay,
 } from './components/EffectsOverlay';
 import { GaleriView } from './components/GaleriView';
+import { GameJoystickSvg, GameView } from './components/GameView';
 import { LaguView } from './components/LaguView';
 import { LoginView } from './components/LoginView';
 import { NobarView } from './components/NobarView';
@@ -37,6 +38,7 @@ import {
   addUnekItem,
   checkSupabaseConnection,
   ensureInitialSyncRows,
+  fetchGameState,
   fetchProfile,
   formatPartnerPresenceText,
   getSavedSession,
@@ -46,6 +48,7 @@ import {
   onSupabaseReconfigured,
   setSavedSession,
   subscribeConnectionStatus,
+  subscribeGameRealtime,
   subscribeIncomingChatNotification,
   subscribePresence,
   subscribeRealtime,
@@ -199,6 +202,8 @@ function sectionToActivity(section: AppSection, inCall: boolean): PresenceActivi
       return 'di Album';
     case 'unek':
       return 'di Unek Unek';
+    case 'game':
+      return 'di Game';
     default:
       return 'di Home';
   }
@@ -219,6 +224,8 @@ function sectionFromPath(pathname: string): AppSection {
       return 'galeri';
     case '/unek':
       return 'unek';
+    case '/game':
+      return 'game';
     default:
       return 'home';
   }
@@ -238,6 +245,8 @@ function pathFromSection(section: AppSection): string {
       return '/album';
     case 'unek':
       return '/unek';
+    case 'game':
+      return '/game';
     default:
       return '/';
   }
@@ -293,6 +302,9 @@ export default function App() {
   const [pelukActive, setPelukActive] = useState(false);
   const [kangenActive, setKangenActive] = useState(false);
 
+  // Shared Game room members (synced realtime via keiz_game_room_keizbucin)
+  const [gameMembers, setGameMembers] = useState<Role[]>([]);
+
   // Burst particles engine
   const [particles, setParticles] = useState<BurstParticle[]>([]);
   const particlesRef = useRef<BurstParticle[]>([]);
@@ -345,13 +357,28 @@ export default function App() {
       if (res.ok) {
         void ensureInitialSyncRows();
         void loadProfile();
+        void fetchGameState();
       }
     });
-    const unsub = subscribeRealtime({
+    const unsubRt = subscribeRealtime({
       onProfil: () => loadProfile(),
+      onGame: () => {
+        void fetchGameState();
+      },
     });
-    return unsub;
+    return () => {
+      unsubRt();
+    };
   }, [supabaseReady, loadProfile]);
+
+  useEffect(() => {
+    if (!currentUser || !supabaseReady) return;
+    return subscribeGameRealtime(
+      currentUser,
+      () => {},
+      (members) => setGameMembers(members)
+    );
+  }, [currentUser, supabaseReady]);
 
   const partnerRole: Role = currentUser === 'faiz' ? 'kenat' : 'faiz';
   const partnerName =
@@ -551,9 +578,9 @@ export default function App() {
       }))
       .filter(
         (p) =>
-          p.y < window.innerHeight + 60 &&
+          p.y < 1000 &&
           p.x > -60 &&
-          p.x < window.innerWidth + 60
+          p.x < 560
       );
 
     setParticles([...particlesRef.current]);
@@ -695,8 +722,8 @@ export default function App() {
       text,
     });
     spawnBurst(
-      window.innerWidth / 2,
-      window.innerHeight / 2,
+      215,
+      340,
       14,
       ['heart', 'heart', 'heart'],
       ['#FF4D8D', '#3B82F6']
@@ -710,6 +737,8 @@ export default function App() {
     partnerPresence,
     presenceClock
   );
+  const partnerInGame =
+    partnerPresenceDisplay.isInGame || gameMembers.includes(partnerRole);
 
   const relationshipStats = computeRelationshipStats(todayTick);
 
@@ -719,7 +748,8 @@ export default function App() {
   };
 
   return (
-    <div className="paper-texture relative flex h-dvh w-full flex-col overflow-hidden bg-gradient-to-b from-[#FFF2F7] to-[#FFE4EF] text-[#2D0A1E]">
+    <div className="h-dvh max-h-full w-full flex flex-col justify-start overflow-hidden bg-gradient-to-b from-[#FFF2F7] to-[#FFE4EF]">
+      <div className="paper-texture relative mx-auto flex h-dvh max-h-full w-full max-w-[430px] flex-col justify-start overflow-hidden bg-gradient-to-b from-[#FFF2F7] to-[#FFE4EF] text-[#2D0A1E]">
       {/* Persistent Global Audio + 1x1 Hidden YouTube Music Player (never unmounts across pages!) */}
       {currentUser && (
         <>
@@ -853,7 +883,7 @@ export default function App() {
 
       {/* Live Partner Activity Transition Toast */}
       {currentUser && presenceToast && (!supabaseToast || errorBannerDismissed) && (
-        <div className="animate-bubble-pop fixed left-1/2 top-14 z-40 flex max-w-[92vw] -translate-x-1/2 items-center gap-2 rounded-full border border-[#FFD6E7] bg-white/95 px-4 py-1.5 text-[11px] font-extrabold text-[#D81B6E] shadow-lg backdrop-blur-md">
+        <div className="animate-bubble-pop fixed left-1/2 top-14 z-40 flex max-w-[398px] -translate-x-1/2 items-center gap-2 rounded-full border border-[#FFD6E7] bg-white/95 px-4 py-1.5 text-[11px] font-extrabold text-[#D81B6E] shadow-lg backdrop-blur-md">
           <span className="truncate">{presenceToast}</span>
           {partnerPresenceDisplay.isWatchingNobar && section !== 'nobar' && (
             <button
@@ -915,7 +945,7 @@ export default function App() {
 
       {/* SETUP SUPABASE WHEN NEITHER MANUAL ENV NOR VERCEL ENV IS FILLED */}
       {!supabaseReady ? (
-        <div className="relative z-10 mx-auto flex min-h-dvh w-full max-w-md flex-col justify-center gap-4 overflow-y-auto px-4 py-6">
+        <div className="relative z-10 flex min-h-0 w-full flex-1 flex-col justify-start gap-4 overflow-y-auto px-4 pt-6 pb-6">
           <div className="keiz-card space-y-3 border border-[#FFD6E7] bg-white/95 p-5">
             <div className="flex items-center gap-2.5">
               <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border border-[#FFD6E7] bg-[#FFE3EE]">
@@ -941,18 +971,16 @@ export default function App() {
           <SupabaseConfigCard onConnected={() => setSupabaseReady(true)} />
         </div>
       ) : !currentUser ? (
-        <div className="relative z-10 min-h-0 flex-1 overflow-y-auto">
-          <LoginView profile={profile} onSuccess={handleLoginSuccess} />
-        </div>
+        <LoginView profile={profile} onSuccess={handleLoginSuccess} />
       ) : (
-        /* MAIN FULL-HEIGHT CONTAINER MAX-W-MD (IDENTICAL ON WEB & PWA) */
+        /* MAIN UNIFIED FIXED 430PX FULL-HEIGHT SHELL (IDENTICAL EVERYWHERE) */
         <div
-          className={`relative z-10 mx-auto flex h-dvh w-full max-w-md flex-1 flex-col overflow-hidden pt-[env(safe-area-inset-top)] ${
+          className={`relative z-10 flex min-h-0 w-full flex-1 flex-col justify-start overflow-hidden ${
             pelukActive ? 'animate-screen-shake' : ''
           }`}
         >
           {section === 'chat' ? (
-            <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-3 pt-2 pb-1">
+            <main className="flex min-h-0 w-full flex-1 flex-col overflow-hidden px-3 pt-2 pb-1">
               <ChatView
                 profile={profile}
                 currentUser={currentUser}
@@ -963,37 +991,51 @@ export default function App() {
                 onForwardToUnek={handleForwardToUnek}
                 onHeartBurstAt={handleHeartBurstAt}
               />
-            </div>
-          ) : (
-            <div
-              ref={scrollContainerRef}
-              className="min-h-0 flex-1 overflow-y-auto px-4 pt-2.5 pb-2"
-            >
-              {section === 'home' ? (
-                <div className="flex min-h-full flex-col gap-[16px]">
-                  {/* Top Bar: left heart + KEIZ BUCIN, right settings */}
-                  <header className="flex h-[52px] shrink-0 items-center justify-between">
-                    <div className="flex items-center gap-2.5">
-                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border border-[#FFD6E7] bg-[#FFE3EE] shadow-sm">
-                        <Heart className="h-[22px] w-[22px] fill-[#FF2E7E] text-[#FF2E7E]" />
-                      </div>
-                      <p className="font-display text-[19px] font-extrabold leading-tight tracking-tight text-[#2D0A1E]">
-                        KEIZ BUCIN
-                      </p>
-                    </div>
+            </main>
+          ) : section === 'nobar' ? (
+            <main className="flex min-h-0 w-full flex-1 flex-col overflow-hidden px-3 pt-2 pb-1">
+              <NobarView
+                currentUser={currentUser}
+                profile={profile}
+                partnerPresence={partnerPresence}
+                joinSignal={nobarJoinSignal}
+                onActiveTitleChange={setActiveNobarTitle}
+                onBack={() => openSection('home')}
+                onBoostLove={() => {}}
+                onHeartBurstAt={handleHeartBurstAt}
+              />
+            </main>
+          ) : section === 'home' ? (
+            <>
+              {/* Top Bar: left heart + KEIZ BUCIN, right settings (transparent pink) */}
+              <header className="flex h-[56px] shrink-0 items-center justify-between px-4">
+                <div className="flex items-center gap-2.5">
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border border-[#FFD6E7] bg-[#FFE3EE] shadow-sm">
+                    <Heart className="h-[22px] w-[22px] fill-[#FF2E7E] text-[#FF2E7E]" />
+                  </div>
+                  <p className="font-display text-[19px] font-extrabold leading-tight tracking-tight text-[#2D0A1E]">
+                    KEIZ BUCIN
+                  </p>
+                </div>
 
-                    <button
-                      type="button"
-                      onClick={() => {
-                        soundFX.playClick();
-                        setShowSettings(true);
-                      }}
-                      aria-label="Pengaturan"
-                      className="btn-bucin flex h-[40px] w-[40px] shrink-0 items-center justify-center rounded-full border border-[#FFD6E7] bg-white text-[#8A6A7A] shadow-sm cursor-pointer"
-                    >
-                      <Settings className="h-5 w-5" />
-                    </button>
-                  </header>
+                <button
+                  type="button"
+                  onClick={() => {
+                    soundFX.playClick();
+                    setShowSettings(true);
+                  }}
+                  aria-label="Pengaturan"
+                  className="btn-bucin flex h-[40px] w-[40px] shrink-0 items-center justify-center rounded-full border border-[#FFD6E7] bg-white text-[#8A6A7A] shadow-sm cursor-pointer"
+                >
+                  <Settings className="h-5 w-5" />
+                </button>
+              </header>
+
+              <main
+                ref={scrollContainerRef}
+                className="min-h-0 w-full flex-1 overflow-y-auto px-4 pt-1 pb-2"
+              >
+                <div className="flex min-h-full w-full flex-col justify-start gap-[16px]">
 
                   {/* Greeting */}
                   <div>
@@ -1321,88 +1363,134 @@ export default function App() {
                 </div>
               </div>
 
+              {/* Card Game Mabar Online - tepat di bawah lama pacaran kita & di atas footer */}
+              <div
+                onClick={() => openSection('game')}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') openSection('game');
+                }}
+                className="keiz-sticker-card menu-card-bucin rounded-3xl bg-[#FFFDFD] p-4 text-left shadow-sm cursor-pointer"
+              >
+                <div className="flex items-center gap-3.5">
+                  <div className="flex h-[84px] w-[84px] shrink-0 items-center justify-center overflow-hidden rounded-2xl border border-[#FFE0EC] bg-[#FFEBF3]">
+                    <GameJoystickSvg size={64} />
+                  </div>
+
+                  <div className="min-w-0 flex-1 space-y-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="font-display truncate text-[18px] font-extrabold leading-tight text-[#2D0A1E]">
+                        Game
+                      </p>
+                      <ChevronRight className="h-4 w-4 shrink-0 text-[#D81B6E]" />
+                    </div>
+                    <p className="text-[12px] font-bold leading-snug text-[#8A6A7A]">
+                      refreshing kenat dan faiz
+                    </p>
+                    <div className="flex items-center gap-1.5 pt-0.5">
+                      <span
+                        className={`h-2 w-2 shrink-0 rounded-full ${
+                          partnerInGame
+                            ? 'bg-emerald-500 animate-pulse'
+                            : 'bg-[#FF7AB8]'
+                        }`}
+                      />
+                      <p
+                        className={`truncate text-[11px] font-extrabold ${
+                          partnerInGame
+                            ? 'text-emerald-600'
+                            : 'text-[#D81B6E]'
+                        }`}
+                      >
+                        {partnerInGame
+                          ? `${partnerRole} lagi online`
+                          : 'mabar yu'}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
               {/* Footer Home */}
-              <footer className="mt-auto pt-2 pb-1 text-center text-[11px] font-bold text-[#9A7A8A]">
+              <footer className="pt-2 pb-1 text-center text-[11px] font-bold text-[#9A7A8A]">
                 KEIZ BUCIN - 28 Agustus 2026
               </footer>
-            </div>
+                </div>
+              </main>
+            </>
           ) : (
             /* SUB-PAGES (except Chat, handled full-height above) */
-            <div className="flex min-h-full flex-col">
-              {section === 'profil' && (
-                <ProfilView
-                  profile={profile}
-                  currentUser={currentUser}
-                  onBack={() => openSection('home')}
-                  onNavigate={openSection}
-                  onUpdateProfile={(next) => setProfile(next)}
-                  onLogout={handleLogout}
-                />
-              )}
-              {section === 'nobar' && (
-                <NobarView
-                  currentUser={currentUser}
-                  profile={profile}
-                  partnerPresence={partnerPresence}
-                  joinSignal={nobarJoinSignal}
-                  onActiveTitleChange={setActiveNobarTitle}
-                  onBack={() => openSection('home')}
-                  onBoostLove={() => {}}
-                />
-              )}
-              {section === 'lagu' && (
-                <LaguView
-                  currentUser={currentUser}
-                  profile={profile}
-                  partnerPresence={partnerPresence}
-                  queue={music.queue}
-                  history={music.history}
-                  musicSync={music.musicSync}
-                  activeSong={music.activeSong}
-                  isPlaying={music.isPlaying}
-                  loadingAudio={music.loadingAudio}
-                  needsUnmute={music.needsUnmute}
-                  currentTime={music.currentTime}
-                  duration={music.duration}
-                  musicRoomMembers={music.musicRoomMembers}
-                  onPlaySong={(song) => music.playSongNow(song)}
-                  onTogglePlayPause={music.togglePlayPause}
-                  onSeek={music.seekTo}
-                  onJoinLive={music.joinLivePartnerMusic}
-                  onForceUnmute={music.forceUnmute}
-                  onPrevNext={music.prevNext}
-                  onAddToQueue={music.addToQueue}
-                  onRemoveFromQueue={music.removeFromQueue}
-                  onToggleFavorite={music.toggleFavorite}
-                  onBack={() => openSection('home')}
-                  onGoChat={() => openSection('chat')}
-                />
-              )}
-              {section === 'galeri' && (
-                <GaleriView
-                  currentUser={currentUser}
-                  onBack={() => openSection('home')}
-                />
-              )}
-              {section === 'unek' && (
-                <UnekUnekView
-                  currentUser={currentUser}
-                  onBack={() => openSection('home')}
-                  onBoostLove={() =>
-                    handleHeartBurstAt(
-                      window.innerWidth / 2,
-                      window.innerHeight * 0.45
-                    )
-                  }
-                />
-              )}
-            </div>
-          )}
-            </div>
+            <main
+              ref={scrollContainerRef}
+              className="min-h-0 w-full flex-1 overflow-y-auto px-4 pt-2 pb-2"
+            >
+              <div className="flex min-h-full w-full flex-col justify-start">
+                {section === 'profil' && (
+                  <ProfilView
+                    profile={profile}
+                    currentUser={currentUser}
+                    onBack={() => openSection('home')}
+                    onNavigate={openSection}
+                    onUpdateProfile={(next) => setProfile(next)}
+                    onLogout={handleLogout}
+                  />
+                )}
+                {section === 'lagu' && (
+                  <LaguView
+                    currentUser={currentUser}
+                    profile={profile}
+                    partnerPresence={partnerPresence}
+                    queue={music.queue}
+                    history={music.history}
+                    musicSync={music.musicSync}
+                    activeSong={music.activeSong}
+                    isPlaying={music.isPlaying}
+                    loadingAudio={music.loadingAudio}
+                    needsUnmute={music.needsUnmute}
+                    currentTime={music.currentTime}
+                    duration={music.duration}
+                    musicRoomMembers={music.musicRoomMembers}
+                    onPlaySong={(song) => music.playSongNow(song)}
+                    onTogglePlayPause={music.togglePlayPause}
+                    onSeek={music.seekTo}
+                    onJoinLive={music.joinLivePartnerMusic}
+                    onForceUnmute={music.forceUnmute}
+                    onPrevNext={music.prevNext}
+                    onAddToQueue={music.addToQueue}
+                    onRemoveFromQueue={music.removeFromQueue}
+                    onToggleFavorite={music.toggleFavorite}
+                    onBack={() => openSection('home')}
+                    onGoChat={() => openSection('chat')}
+                  />
+                )}
+                {section === 'galeri' && (
+                  <GaleriView
+                    currentUser={currentUser}
+                    onBack={() => openSection('home')}
+                  />
+                )}
+                {section === 'unek' && (
+                  <UnekUnekView
+                    currentUser={currentUser}
+                    onBack={() => openSection('home')}
+                    onBoostLove={() => handleHeartBurstAt(215, 340)}
+                  />
+                )}
+                {section === 'game' && (
+                  <GameView
+                    currentUser={currentUser}
+                    partnerInGame={partnerInGame}
+                    onRoomMembersChange={setGameMembers}
+                    onBack={() => openSection('home')}
+                  />
+                )}
+              </div>
+            </main>
           )}
 
-          {/* Docked Bottom Stack (Mini Player + Sticky 5-Tab Bottom Nav with safe-area bottom inset) */}
-          <div className="sticky bottom-0 z-20 flex shrink-0 flex-col gap-2 px-3 pt-1 pb-[max(0.625rem,env(safe-area-inset-bottom))]">
+          {/* Docked Bottom Stack (Mini Player + Fixed 68px 5-Tab Bottom Nav) */}
+          <div className="z-20 flex shrink-0 flex-col gap-2 px-3 pt-1 pb-2">
             {section === 'lagu' && music.isPlaying && music.activeSong && (
               <div
                 onClick={() => openSection('lagu')}
@@ -1461,12 +1549,12 @@ export default function App() {
               </div>
             )}
 
-            {/* Sticky 5-Tab Bottom Nav: Home, Chat, Musik, Nobar, Profil */}
+            {/* Fixed 68px 5-Tab Bottom Nav: Home, Chat, Musik, Nobar, Profil */}
             <nav
               aria-label="Navigasi utama"
-              className="w-full rounded-full border border-[#FFD6E7] bg-white/95 px-2 py-1.5 shadow-[0_8px_28px_rgba(255,46,126,0.18)] backdrop-blur-md"
+              className="flex h-[68px] w-full items-center rounded-full border border-[#FFD6E7] bg-white/95 px-2 shadow-[0_8px_28px_rgba(255,46,126,0.18)] backdrop-blur-md"
             >
-              <div className="grid grid-cols-5 gap-1">
+              <div className="grid w-full grid-cols-5 gap-1">
                 {(
                   [
                     { id: 'home', label: 'Home', Icon: Home },
@@ -1503,7 +1591,7 @@ export default function App() {
       {showSettings && currentUser && (
         <div
           onClick={() => setShowSettings(false)}
-          className="fixed inset-0 z-50 flex items-end justify-center bg-[#2D0A1E]/40 p-4 backdrop-blur-sm sm:items-center"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-[#2D0A1E]/40 p-4 backdrop-blur-sm"
         >
           <div
             onClick={(e) => e.stopPropagation()}
@@ -1554,6 +1642,7 @@ export default function App() {
           </div>
         </div>
       )}
+      </div>
     </div>
   );
 }

@@ -4,6 +4,8 @@ import type {
   ChatMessage,
   CoupleProfile,
   GalleryPhoto,
+  GameRoomStatus,
+  KeizGameState,
   MusicSyncState,
   NobarSyncState,
   PresenceActivity,
@@ -418,6 +420,24 @@ export async function ensureInitialSyncRows(): Promise<boolean> {
       ]);
     }
 
+    const gameRes = await sb.from('keiz_game').select('id').eq('id', 1).maybeSingle();
+    if (!gameRes.error && !gameRes.data) {
+      await sb.from('keiz_game').upsert([
+        {
+          id: 1,
+          room_code: 'keizbucin',
+          game_type: '',
+          status: 'waiting',
+          current_turn: 'faiz',
+          board: {},
+          score_faiz: 0,
+          score_kenat: 0,
+          last_move_by: null,
+          updated_at: new Date().toISOString(),
+        },
+      ]);
+    }
+
     return true;
   } catch {
     return false;
@@ -548,6 +568,19 @@ create table if not exists public.lagu_keiz (
   created_at timestamptz default now()
 );
 
+create table if not exists public.keiz_game (
+  id int primary key default 1,
+  room_code text default 'keizbucin',
+  game_type text default '',
+  status text default 'waiting',
+  current_turn text default 'faiz',
+  board jsonb default '{}'::jsonb,
+  score_faiz int default 0,
+  score_kenat int default 0,
+  last_move_by text,
+  updated_at timestamptz default now()
+);
+
 alter table public.users_keiz enable row level security;
 alter table public.keiz_chat enable row level security;
 alter table public.keiz_nobar_sync enable row level security;
@@ -558,8 +591,8 @@ alter table public.call_keiz enable row level security;
 alter table public.postingan_keiz enable row level security;
 alter table public.unek_unek_keiz enable row level security;
 alter table public.lagu_keiz enable row level security;
-
 alter table public.keiz_typing enable row level security;
+alter table public.keiz_game enable row level security;
 
 create policy "allow_all_users_keiz" on public.users_keiz for all using (true) with check (true);
 create policy "allow_all_keiz_chat" on public.keiz_chat for all using (true) with check (true);
@@ -572,6 +605,7 @@ create policy "allow_all_call_keiz" on public.call_keiz for all using (true) wit
 create policy "allow_all_postingan_keiz" on public.postingan_keiz for all using (true) with check (true);
 create policy "allow_all_unek_unek_keiz" on public.unek_unek_keiz for all using (true) with check (true);
 create policy "allow_all_lagu_keiz" on public.lagu_keiz for all using (true) with check (true);
+create policy "allow_all_keiz_game" on public.keiz_game for all using (true) with check (true);
 
 insert into storage.buckets (id, name, public)
 values ('keiz-album', 'keiz-album', true)
@@ -594,7 +628,11 @@ insert into public.keiz_music_sync (id, youtube_url, "videoId", title, artist, t
 values (1, '', '', '', '', '', 213000, false, 0, 'Faiz', 'change_song')
 on conflict (id) do nothing;
 
-alter publication supabase_realtime add table public.users_keiz, public.keiz_chat, public.keiz_typing, public.keiz_nobar_sync, public.keiz_music_sync, public.keiz_album, public.presence_keiz, public.call_keiz, public.postingan_keiz, public.unek_unek_keiz, public.lagu_keiz;`;
+insert into public.keiz_game (id, room_code, game_type, status, current_turn, board, score_faiz, score_kenat, last_move_by)
+values (1, 'keizbucin', '', 'waiting', 'faiz', '{}'::jsonb, 0, 0, null)
+on conflict (id) do nothing;
+
+alter publication supabase_realtime add table public.users_keiz, public.keiz_chat, public.keiz_typing, public.keiz_nobar_sync, public.keiz_music_sync, public.keiz_album, public.presence_keiz, public.call_keiz, public.postingan_keiz, public.unek_unek_keiz, public.lagu_keiz, public.keiz_game;`;
 
 const localChannel =
   typeof BroadcastChannel !== 'undefined'
@@ -1680,6 +1718,7 @@ function mapChatRow(row: Record<string, unknown>, idx = 0): ChatMessage {
     'sticker',
     'nobar_link',
     'music_link',
+    'nobar_chat',
   ]);
   const inferredType = validTypes.has(rawType)
     ? (rawType as ChatMessage['type'])
@@ -1724,10 +1763,13 @@ export async function fetchChats(currentUser?: Role): Promise<ChatMessage[]> {
   const sb = activeClient;
   if (!sb) return [];
   try {
-    void discoverChatSchema(sb);
-    let { data, error } = await sb
-      .from(CHAT_TABLE)
-      .select('*')
+    const schema = await discoverChatSchema(sb);
+    const hasTypeCol = !schema || schema.columns.has('type');
+    let query = sb.from(CHAT_TABLE).select('*');
+    if (hasTypeCol) {
+      query = query.or('type.is.null,type.neq.nobar_chat');
+    }
+    let { data, error } = await query
       .order('created_at', { ascending: true })
       .limit(200);
 
@@ -1735,7 +1777,8 @@ export async function fetchChats(currentUser?: Role): Promise<ChatMessage[]> {
       error &&
       (error.code === '42703' ||
         error.code === 'PGRST204' ||
-        String(error.message || '').includes('created_at'))
+        String(error.message || '').includes('created_at') ||
+        String(error.message || '').includes('type'))
     ) {
       const retry = await sb.from(CHAT_TABLE).select('*').limit(200);
       data = retry.data;
@@ -2141,6 +2184,241 @@ export function subscribeChatRealtime(
     localChannel?.removeEventListener('message', handleLocal);
     if (chatChan && activeClient) {
       activeClient.removeChannel(chatChan);
+    }
+  };
+}
+
+// ---------- CHAT NOBAR BERDUA (terpisah dari Chat Biasa, pakai type = 'nobar_chat') ----------
+let activeNobarChatBroadcastChan: RealtimeChannel | null = null;
+let activeNobarChatBroadcastReady = false;
+
+export async function fetchNobarChats(currentUser?: Role): Promise<ChatMessage[]> {
+  const sb = activeClient;
+  if (!sb) return [];
+  try {
+    const schema = await discoverChatSchema(sb);
+    const hasTypeCol = !schema || schema.columns.has('type');
+
+    let query = sb.from(CHAT_TABLE).select('*');
+    if (hasTypeCol) {
+      query = query.eq('type', 'nobar_chat');
+    }
+
+    let { data, error } = await query
+      .order('created_at', { ascending: true })
+      .limit(200);
+
+    if (
+      error &&
+      (error.code === '42703' ||
+        error.code === 'PGRST204' ||
+        String(error.message || '').includes('created_at'))
+    ) {
+      const retryQ = hasTypeCol
+        ? sb.from(CHAT_TABLE).select('*').eq('type', 'nobar_chat').limit(200)
+        : sb.from(CHAT_TABLE).select('*').limit(200);
+      const retry = await retryQ;
+      data = retry.data;
+      error = retry.error;
+    }
+
+    if (error) {
+      return [];
+    }
+
+    const userLower = currentUser ? currentUser.toLowerCase() : null;
+    const partnerLower = userLower
+      ? userLower === 'faiz'
+        ? 'kenat'
+        : 'faiz'
+      : null;
+
+    return Array.isArray(data)
+      ? data
+          .map((row, idx) => mapChatRow(row as Record<string, unknown>, idx))
+          .filter((m) => {
+            if (m.type !== 'nobar_chat') return false;
+            const s = m.sender.toLowerCase();
+            const r = m.receiver.toLowerCase();
+            if (userLower && partnerLower) {
+              return (
+                (s === userLower && r === partnerLower) ||
+                (s === partnerLower && r === userLower)
+              );
+            }
+            return (
+              (s === 'faiz' && r === 'kenat') ||
+              (s === 'kenat' && r === 'faiz')
+            );
+          })
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function sendNobarChatMessage(
+  sender: Role,
+  message: string,
+  extra?: Partial<ChatMessage>
+): Promise<ChatMessage> {
+  const saved = await sendChatMessage(sender, message, {
+    ...extra,
+    type: 'nobar_chat',
+  });
+
+  if (!saved.failed) {
+    localChannel?.postMessage({ type: 'nobar_chat_update', payload: saved });
+    if (activeNobarChatBroadcastChan && activeNobarChatBroadcastReady) {
+      activeNobarChatBroadcastChan
+        .send({
+          type: 'broadcast',
+          event: 'nobar_chat_msg',
+          payload: { action: 'insert', msg: saved },
+        })
+        .catch(() => {});
+    }
+  }
+
+  return saved;
+}
+
+export async function updateNobarChatReact(
+  id: string,
+  react?: string
+): Promise<ChatMessage[]> {
+  const sb = activeClient;
+  if (sb) {
+    try {
+      await sb
+        .from(CHAT_TABLE)
+        .update({ react: react ?? null })
+        .eq('id', id);
+    } catch {
+      // ignore
+    }
+  }
+  localChannel?.postMessage({ type: 'nobar_chat_update' });
+  if (activeNobarChatBroadcastChan && activeNobarChatBroadcastReady) {
+    activeNobarChatBroadcastChan
+      .send({
+        type: 'broadcast',
+        event: 'nobar_chat_msg',
+        payload: { action: 'refresh' },
+      })
+      .catch(() => {});
+  }
+  return fetchNobarChats();
+}
+
+export async function deleteNobarChatMessage(id: string): Promise<ChatMessage[]> {
+  const sb = activeClient;
+  if (sb) {
+    try {
+      const schema = await discoverChatSchema(sb);
+      if (schema && !schema.columns.has('is_deleted')) {
+        await sb.from(CHAT_TABLE).delete().eq('id', id);
+      } else {
+        await sb
+          .from(CHAT_TABLE)
+          .update({ is_deleted: true })
+          .eq('id', id);
+      }
+    } catch {
+      // ignore
+    }
+  }
+  localChannel?.postMessage({ type: 'nobar_chat_update' });
+  if (activeNobarChatBroadcastChan && activeNobarChatBroadcastReady) {
+    activeNobarChatBroadcastChan
+      .send({
+        type: 'broadcast',
+        event: 'nobar_chat_msg',
+        payload: { action: 'refresh' },
+      })
+      .catch(() => {});
+  }
+  return fetchNobarChats();
+}
+
+export function subscribeNobarChatRealtime(
+  onInsert: (msg: ChatMessage) => void,
+  onUpdate: (msg: ChatMessage) => void,
+  onRefresh: () => void
+): () => void {
+  const handleLocal = (ev: MessageEvent) => {
+    if (ev.data?.type === 'nobar_chat_update') {
+      if (ev.data.payload) {
+        onInsert(ev.data.payload as ChatMessage);
+      } else {
+        onRefresh();
+      }
+    }
+  };
+  localChannel?.addEventListener('message', handleLocal);
+
+  let nobarChatChan: RealtimeChannel | null = null;
+  const setup = () => {
+    const sb = activeClient;
+    activeNobarChatBroadcastReady = false;
+    if (nobarChatChan && sb) {
+      sb.removeChannel(nobarChatChan);
+      nobarChatChan = null;
+      activeNobarChatBroadcastChan = null;
+    }
+    if (!sb) return;
+    nobarChatChan = sb
+      .channel('keiz_nobar_chat_rt', {
+        config: { broadcast: { self: false } },
+      })
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: CHAT_TABLE },
+        (payload) => {
+          const mapped = mapChatRow(payload.new as Record<string, unknown>);
+          if (mapped.type === 'nobar_chat') onInsert(mapped);
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: CHAT_TABLE },
+        (payload) => {
+          const mapped = mapChatRow(payload.new as Record<string, unknown>);
+          if (mapped.type === 'nobar_chat') onUpdate(mapped);
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: 'DELETE', schema: 'public', table: CHAT_TABLE },
+        () => {
+          onRefresh();
+        }
+      )
+      .on('broadcast', { event: 'nobar_chat_msg' }, ({ payload }) => {
+        const p = payload as { action?: string; msg?: ChatMessage } | undefined;
+        if (p?.action === 'insert' && p.msg) {
+          onInsert(p.msg);
+        } else {
+          onRefresh();
+        }
+      })
+      .subscribe((status) => {
+        activeNobarChatBroadcastReady = status === 'SUBSCRIBED';
+      });
+    activeNobarChatBroadcastChan = nobarChatChan;
+  };
+  setup();
+  const unsubReconfig = onSupabaseReconfigured(setup);
+
+  return () => {
+    unsubReconfig();
+    localChannel?.removeEventListener('message', handleLocal);
+    activeNobarChatBroadcastReady = false;
+    if (nobarChatChan && activeClient) {
+      activeClient.removeChannel(nobarChatChan);
+      if (activeNobarChatBroadcastChan === nobarChatChan) {
+        activeNobarChatBroadcastChan = null;
+      }
     }
   };
 }
@@ -2922,6 +3200,7 @@ export interface PartnerPresenceDisplay {
   online: boolean;
   isWatchingNobar: boolean;
   isListeningMusic: boolean;
+  isInGame: boolean;
   nobarTitle: string;
   songTitle: string;
   lastSeenText: string;
@@ -2942,6 +3221,7 @@ export function formatPartnerPresenceText(
       online: false,
       isWatchingNobar: false,
       isListeningMusic: false,
+      isInGame: false,
       nobarTitle: '',
       songTitle: '',
       lastSeenText,
@@ -2956,10 +3236,13 @@ export function formatPartnerPresenceText(
 
   const rawPlay = (presence.lagi_play_apa || '').trim();
   const isWatchingNobar = presence.lagi_ngapain === 'di Nobar';
+  const isInGame = presence.lagi_ngapain === 'di Game';
   const hasMusicMarker =
     rawPlay.startsWith('MUSIC:') || rawPlay.startsWith('🎵 ');
   const isListeningMusic =
-    !isWatchingNobar && (presence.lagi_ngapain === 'di Musik' || hasMusicMarker);
+    !isWatchingNobar &&
+    !isInGame &&
+    (presence.lagi_ngapain === 'di Musik' || hasMusicMarker);
 
   if (isWatchingNobar) {
     const nobarTitle = stripDecorEmojis(rawPlay.replace(/^(?:NOBAR:|🎬)\s*/i, ''));
@@ -2967,6 +3250,7 @@ export function formatPartnerPresenceText(
       online: true,
       isWatchingNobar: true,
       isListeningMusic: false,
+      isInGame: false,
       nobarTitle,
       songTitle: '',
       lastSeenText,
@@ -2976,6 +3260,20 @@ export function formatPartnerPresenceText(
       shortLabel: nobarTitle
         ? `Online - lagi nonton ${nobarTitle}`
         : 'Online - lagi nonton Nobar',
+    };
+  }
+
+  if (isInGame) {
+    return {
+      online: true,
+      isWatchingNobar: false,
+      isListeningMusic: false,
+      isInGame: true,
+      nobarTitle: '',
+      songTitle: '',
+      lastSeenText,
+      label: `${partnerName} lagi online di Game`,
+      shortLabel: 'Online · di Game',
     };
   }
 
@@ -2991,6 +3289,7 @@ export function formatPartnerPresenceText(
         online: true,
         isWatchingNobar: false,
         isListeningMusic: true,
+        isInGame: false,
         nobarTitle: '',
         songTitle,
         lastSeenText,
@@ -3002,6 +3301,7 @@ export function formatPartnerPresenceText(
       online: true,
       isWatchingNobar: false,
       isListeningMusic: false,
+      isInGame: false,
       nobarTitle: '',
       songTitle: '',
       lastSeenText,
@@ -3015,6 +3315,7 @@ export function formatPartnerPresenceText(
     online: true,
     isWatchingNobar: false,
     isListeningMusic: false,
+    isInGame: false,
     nobarTitle: '',
     songTitle: '',
     lastSeenText,
@@ -3675,6 +3976,295 @@ export async function replyUnekItem(
   return fetchUnekList();
 }
 
+// ---------- GAME MABAR ONLINE SHARED (tabel: keiz_game, 1 room tetap: keizbucin) ----------
+export const KEIZ_GAME_SQL_SETUP = `create table if not exists public.keiz_game (
+  id int primary key default 1,
+  room_code text default 'keizbucin',
+  game_type text default '',
+  status text default 'waiting',
+  current_turn text default 'faiz',
+  board jsonb default '{}'::jsonb,
+  score_faiz int default 0,
+  score_kenat int default 0,
+  last_move_by text,
+  updated_at timestamptz default now()
+);
+alter table public.keiz_game enable row level security;
+create policy "allow_all_keiz_game" on public.keiz_game for all using (true) with check (true);
+insert into public.keiz_game (id, room_code, game_type, status, current_turn, board, score_faiz, score_kenat, last_move_by)
+values (1, 'keizbucin', '', 'waiting', 'faiz', '{}'::jsonb, 0, 0, null)
+on conflict (id) do nothing;
+alter publication supabase_realtime add table public.keiz_game;`;
+
+export const DEFAULT_KEIZ_GAME: KeizGameState = {
+  id: 1,
+  room_code: 'keizbucin',
+  game_type: '',
+  status: 'waiting',
+  current_turn: 'faiz',
+  board: {},
+  score_faiz: 0,
+  score_kenat: 0,
+  last_move_by: null,
+  updated_at: new Date().toISOString(),
+};
+
+function normalizeGameStatus(raw: unknown): GameRoomStatus {
+  const s = String(raw || '').toLowerCase();
+  if (s === 'playing' || s === 'finished') return s;
+  return 'waiting';
+}
+
+function mapGameRow(row: Record<string, unknown>): KeizGameState {
+  let boardVal: Record<string, unknown> | unknown[] = {};
+  if (row.board && typeof row.board === 'object') {
+    boardVal = row.board as Record<string, unknown> | unknown[];
+  }
+  return {
+    id: Number(row.id ?? 1) || 1,
+    room_code: String(row.room_code ?? 'keizbucin') || 'keizbucin',
+    game_type: String(row.game_type ?? ''),
+    status: normalizeGameStatus(row.status),
+    current_turn: toRole(row.current_turn, 'faiz'),
+    board: boardVal,
+    score_faiz: Number(row.score_faiz ?? 0) || 0,
+    score_kenat: Number(row.score_kenat ?? 0) || 0,
+    last_move_by: row.last_move_by ? toRole(row.last_move_by, 'faiz') : null,
+    updated_at: String(row.updated_at ?? new Date().toISOString()),
+  };
+}
+
+let activeGameRealtimeChannel: RealtimeChannel | null = null;
+let latestGameState: KeizGameState = { ...DEFAULT_KEIZ_GAME };
+
+async function persistKeizGamePatch(
+  patch: Partial<KeizGameState>
+): Promise<KeizGameState> {
+  const next: KeizGameState = {
+    ...latestGameState,
+    ...patch,
+    id: 1,
+    room_code: 'keizbucin',
+    updated_at: new Date().toISOString(),
+  };
+  latestGameState = next;
+  localChannel?.postMessage({ type: 'keiz_game_update', payload: next });
+
+  if (activeGameRealtimeChannel) {
+    activeGameRealtimeChannel
+      .send({
+        type: 'broadcast',
+        event: 'game_event',
+        payload: next,
+      })
+      .catch(() => {});
+  }
+
+  const sb = activeClient;
+  if (!sb) return next;
+
+  try {
+    const { data, error } = await sb
+      .from('keiz_game')
+      .upsert([next])
+      .select()
+      .maybeSingle();
+
+    if (!error && data) {
+      const mapped = mapGameRow(data as Record<string, unknown>);
+      latestGameState = mapped;
+      return mapped;
+    }
+  } catch {
+    // ignore
+  }
+  return next;
+}
+
+export async function fetchGameState(): Promise<KeizGameState> {
+  const sb = activeClient;
+  if (!sb) return latestGameState;
+
+  try {
+    const { data, error } = await sb
+      .from('keiz_game')
+      .select('*')
+      .eq('id', 1)
+      .maybeSingle();
+
+    if (error) return latestGameState;
+    if (!data) {
+      const created = {
+        ...DEFAULT_KEIZ_GAME,
+        updated_at: new Date().toISOString(),
+      };
+      await sb.from('keiz_game').upsert([created]);
+      latestGameState = created;
+      return created;
+    }
+
+    const mapped = mapGameRow(data as Record<string, unknown>);
+    latestGameState = mapped;
+    return mapped;
+  } catch {
+    return latestGameState;
+  }
+}
+
+export async function createGame(
+  game_type: string,
+  by: Role = 'faiz'
+): Promise<KeizGameState> {
+  return persistKeizGamePatch({
+    game_type,
+    status: 'waiting',
+    current_turn: by,
+    board: {},
+    last_move_by: by,
+  });
+}
+
+export async function joinGame(by: Role): Promise<KeizGameState> {
+  const current = await fetchGameState();
+  return persistKeizGamePatch({
+    game_type: current.game_type,
+    status: current.game_type ? 'playing' : 'waiting',
+    last_move_by: by,
+  });
+}
+
+export async function makeMove(move: {
+  by: Role;
+  board: Record<string, unknown> | unknown[];
+  nextTurn?: Role;
+  status?: GameRoomStatus;
+}): Promise<KeizGameState> {
+  const nextTurn: Role =
+    move.nextTurn ?? (move.by === 'faiz' ? 'kenat' : 'faiz');
+  return persistKeizGamePatch({
+    board: move.board,
+    current_turn: nextTurn,
+    status: move.status ?? 'playing',
+    last_move_by: move.by,
+  });
+}
+
+export async function resetGame(by: Role = 'faiz'): Promise<KeizGameState> {
+  return persistKeizGamePatch({
+    status: 'waiting',
+    current_turn: 'faiz',
+    board: {},
+    score_faiz: 0,
+    score_kenat: 0,
+    last_move_by: by,
+  });
+}
+
+export async function updateScore(scores: {
+  score_faiz?: number;
+  score_kenat?: number;
+  by?: Role;
+}): Promise<KeizGameState> {
+  return persistKeizGamePatch({
+    score_faiz:
+      scores.score_faiz !== undefined
+        ? scores.score_faiz
+        : latestGameState.score_faiz,
+    score_kenat:
+      scores.score_kenat !== undefined
+        ? scores.score_kenat
+        : latestGameState.score_kenat,
+    last_move_by: scores.by ?? latestGameState.last_move_by,
+  });
+}
+
+export function subscribeGameRealtime(
+  currentUser: Role,
+  onGameChange: (state: KeizGameState) => void,
+  onRoomMembers?: (members: Role[]) => void
+): () => void {
+  const handleLocal = (ev: MessageEvent) => {
+    if (ev.data?.type === 'keiz_game_update' && ev.data.payload) {
+      const mapped = mapGameRow(ev.data.payload as Record<string, unknown>);
+      latestGameState = mapped;
+      onGameChange(mapped);
+    }
+  };
+  localChannel?.addEventListener('message', handleLocal);
+
+  const setup = () => {
+    const sb = activeClient;
+    if (activeGameRealtimeChannel && sb) {
+      sb.removeChannel(activeGameRealtimeChannel);
+      activeGameRealtimeChannel = null;
+    }
+    if (!sb) return;
+
+    const channel = sb.channel('keiz_game_room_keizbucin', {
+      config: { presence: { key: currentUser } },
+    });
+
+    const syncMembers = () => {
+      if (!onRoomMembers) return;
+      const state = channel.presenceState() as Record<string, unknown[]>;
+      const members = Object.keys(state).filter(
+        (k): k is Role => k === 'faiz' || k === 'kenat'
+      );
+      onRoomMembers(members);
+    };
+
+    channel
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'keiz_game' },
+        (payload) => {
+          if (payload.eventType === 'DELETE') return;
+          if (payload.new) {
+            const mapped = mapGameRow(payload.new as Record<string, unknown>);
+            latestGameState = mapped;
+            onGameChange(mapped);
+          }
+        }
+      )
+      .on('broadcast', { event: 'game_event' }, ({ payload }) => {
+        if (payload) {
+          const mapped = mapGameRow(payload as Record<string, unknown>);
+          latestGameState = mapped;
+          onGameChange(mapped);
+        }
+      })
+      .on('presence', { event: 'sync' }, syncMembers)
+      .on('presence', { event: 'join' }, syncMembers)
+      .on('presence', { event: 'leave' }, syncMembers)
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+          channel
+            .track({
+              user: currentUser,
+              room_code: 'keizbucin',
+              joined_at: new Date().toISOString(),
+            })
+            .catch(() => {});
+        }
+      });
+
+    activeGameRealtimeChannel = channel;
+  };
+
+  setup();
+  const unsubReconfig = onSupabaseReconfigured(setup);
+
+  return () => {
+    unsubReconfig();
+    localChannel?.removeEventListener('message', handleLocal);
+    if (activeGameRealtimeChannel && activeClient) {
+      activeGameRealtimeChannel.untrack().catch(() => {});
+      activeClient.removeChannel(activeGameRealtimeChannel);
+      activeGameRealtimeChannel = null;
+    }
+  };
+}
+
 export function subscribeRealtime(callbacks: {
   onChat?: () => void;
   onLagu?: () => void;
@@ -3684,6 +4274,7 @@ export function subscribeRealtime(callbacks: {
   onProfil?: () => void;
   onPostingan?: () => void;
   onAlbum?: () => void;
+  onGame?: () => void;
 }): () => void {
   const handleChannel = (ev: MessageEvent) => {
     if (ev.data?.type === 'chat_update') callbacks.onChat?.();
@@ -3694,6 +4285,7 @@ export function subscribeRealtime(callbacks: {
     if (ev.data?.type === 'profil_update') callbacks.onProfil?.();
     if (ev.data?.type === 'postingan_update') callbacks.onPostingan?.();
     if (ev.data?.type === 'album_update') callbacks.onAlbum?.();
+    if (ev.data?.type === 'keiz_game_update') callbacks.onGame?.();
   };
   localChannel?.addEventListener('message', handleChannel);
 
@@ -3715,6 +4307,7 @@ export function subscribeRealtime(callbacks: {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'users_keiz' }, () => callbacks.onProfil?.())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'postingan_keiz' }, () => callbacks.onPostingan?.())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'keiz_album' }, () => callbacks.onAlbum?.())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'keiz_game' }, () => callbacks.onGame?.())
       .subscribe();
   };
 

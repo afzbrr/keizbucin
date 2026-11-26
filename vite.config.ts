@@ -72,7 +72,7 @@ export default defineConfig(() => {
           scope: '/',
           display: 'standalone',
           orientation: 'portrait',
-          theme_color: '#ff5e8a',
+          theme_color: '#FFF2F7',
           background_color: '#FFF2F7',
           icons: [
             {

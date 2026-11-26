@@ -542,7 +542,7 @@ export const CallOverlay: React.FC<CallOverlayProps> = ({
             }
             onRequestClose();
           }}
-          className="fixed inset-0 z-50 flex items-end justify-center bg-[#2D0A1E]/45 p-4 backdrop-blur-sm sm:items-center"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-[#2D0A1E]/45 p-4 backdrop-blur-sm"
         >
           <div
             onClick={(e) => e.stopPropagation()}

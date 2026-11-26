@@ -7,7 +7,8 @@ export type AppSection =
   | 'lagu'
   | 'nobar'
   | 'unek'
-  | 'galeri';
+  | 'galeri'
+  | 'game';
 
 export interface YTPlayerInstance {
   loadVideoById: (videoId: string, startSeconds?: number) => void;
@@ -70,7 +71,8 @@ export type ChatMessageType =
   | 'voice'
   | 'sticker'
   | 'nobar_link'
-  | 'music_link';
+  | 'music_link'
+  | 'nobar_chat';
 
 export interface ChatMessage {
   id: string;
@@ -151,7 +153,23 @@ export type PresenceActivity =
   | 'di Call'
   | 'di Profil'
   | 'di Album'
-  | 'di Unek Unek';
+  | 'di Unek Unek'
+  | 'di Game';
+
+export type GameRoomStatus = 'waiting' | 'playing' | 'finished';
+
+export interface KeizGameState {
+  id: number;
+  room_code: string;
+  game_type: string;
+  status: GameRoomStatus;
+  current_turn: Role;
+  board: Record<string, unknown> | unknown[];
+  score_faiz: number;
+  score_kenat: number;
+  last_move_by: Role | null;
+  updated_at: string;
+}
 
 export interface PresenceState {
   user: Role;

@@ -1221,11 +1221,11 @@ export const ProfilView: React.FC<ProfilViewProps> = ({
       {isViewingSelf && showSongPicker && (
         <div
           onClick={() => setShowSongPicker(false)}
-          className="fixed inset-0 z-50 flex items-end justify-center bg-[#2D0A1E]/55 backdrop-blur-sm sm:items-center sm:p-4"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-[#2D0A1E]/55 p-4 backdrop-blur-sm"
         >
           <div
             onClick={(e) => e.stopPropagation()}
-            className="animate-slide-up-bounce flex max-h-[82dvh] w-full max-w-[430px] flex-col rounded-t-[28px] border border-[#FFD6E7] bg-white p-5 shadow-2xl sm:rounded-[28px]"
+            className="animate-slide-up-bounce flex max-h-[82dvh] w-full max-w-[400px] flex-col rounded-[28px] border border-[#FFD6E7] bg-white p-5 shadow-2xl"
           >
             <div className="flex items-center justify-between">
               <h3 className="font-display text-lg font-extrabold text-[#2D0A1E]">
@@ -1312,12 +1312,12 @@ export const ProfilView: React.FC<ProfilViewProps> = ({
       {isViewingSelf && showPostModal && (
         <div
           onClick={() => setShowPostModal(false)}
-          className="fixed inset-0 z-50 flex items-end justify-center bg-[#2D0A1E]/55 backdrop-blur-sm sm:items-center sm:p-4"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-[#2D0A1E]/55 p-4 backdrop-blur-sm"
         >
           <form
             onClick={(e) => e.stopPropagation()}
             onSubmit={handleCreatePost}
-            className="animate-slide-up-bounce w-full max-w-[400px] rounded-t-[28px] border border-[#FFD6E7] bg-white p-5 shadow-2xl sm:rounded-[28px]"
+            className="animate-slide-up-bounce w-full max-w-[400px] rounded-[28px] border border-[#FFD6E7] bg-white p-5 shadow-2xl"
           >
             <div className="flex items-center justify-between">
               <h3 className="font-display text-lg font-extrabold text-[#2D0A1E]">
@@ -1408,14 +1408,13 @@ export const ProfilView: React.FC<ProfilViewProps> = ({
       {isViewingSelf && showEdit && (
         <div
           onClick={() => setShowEdit(false)}
-          className="fixed inset-0 z-50 flex items-end justify-center bg-[#2D0A1E]/45 backdrop-blur-sm sm:items-center sm:p-4"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-[#2D0A1E]/45 p-4 backdrop-blur-sm"
         >
           <form
             onClick={(e) => e.stopPropagation()}
             onSubmit={handleSaveEdit}
-            className="animate-slide-up-bounce max-h-[88dvh] w-full max-w-[430px] overflow-y-auto rounded-t-[28px] border border-[#FFD6E7] bg-white p-5 shadow-2xl sm:rounded-[28px]"
+            className="animate-slide-up-bounce max-h-[88dvh] w-full max-w-[400px] overflow-y-auto rounded-[28px] border border-[#FFD6E7] bg-white p-5 shadow-2xl"
           >
-            <div className="mx-auto mb-3 h-1.5 w-12 rounded-full bg-pink-200 sm:hidden" />
             <div className="flex items-center justify-between">
               <h3 className="font-display text-lg font-extrabold text-[#2D0A1E]">
                 Edit Profil {myName}
@@ -1478,7 +1477,7 @@ export const ProfilView: React.FC<ProfilViewProps> = ({
       {isViewingSelf && showProfilSettings && (
         <div
           onClick={() => setShowProfilSettings(false)}
-          className="fixed inset-0 z-50 flex items-end justify-center bg-[#2D0A1E]/45 p-4 backdrop-blur-sm sm:items-center"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-[#2D0A1E]/45 p-4 backdrop-blur-sm"
         >
           <div
             onClick={(e) => e.stopPropagation()}
