@@ -16,7 +16,7 @@ import {
   VolumeX,
   X,
 } from 'lucide-react';
-import { AppleTextWithEmojis } from './components/AppleEmoji';
+import { AppleEmoji, AppleTextWithEmojis } from './components/AppleEmoji';
 import { CallOverlay } from './components/CallOverlay';
 import { ChatView } from './components/ChatView';
 import {
@@ -29,6 +29,14 @@ import { GaleriView } from './components/GaleriView';
 import { GameJoystickSvg, GameView } from './components/GameView';
 import { LaguView } from './components/LaguView';
 import { LoginView } from './components/LoginView';
+import { LoveLetterView } from './components/LoveLetterView';
+import {
+  DEFAULT_COUPLE_START,
+  MensivePopupModal,
+  computeMensiveMetrics,
+  fetchMensiveRemoteData,
+  type MensiveFetchedData,
+} from './components/MensivePopupModal';
 import { NobarView } from './components/NobarView';
 import { ProfilView } from './components/ProfilView';
 import { Sticker3D } from './components/Sticker3D';
@@ -242,6 +250,8 @@ function sectionToActivity(section: AppSection, inCall: boolean): PresenceActivi
       return 'di Unek Unek';
     case 'game':
       return 'di Game';
+    case 'love-letter':
+      return 'di Love Letter';
     default:
       return 'di Home';
   }
@@ -264,6 +274,8 @@ function sectionFromPath(pathname: string): AppSection {
       return 'unek';
     case '/game':
       return 'game';
+    case '/love-letter':
+      return 'love-letter';
     default:
       return 'home';
   }
@@ -285,6 +297,8 @@ function pathFromSection(section: AppSection): string {
       return '/unek';
     case 'game':
       return '/game';
+    case 'love-letter':
+      return '/love-letter';
     default:
       return '/';
   }
@@ -342,6 +356,11 @@ export default function App() {
 
   // Shared Game room members (synced realtime via keiz_game_room_keizbucin)
   const [gameMembers, setGameMembers] = useState<Role[]>([]);
+
+  // Pop-Up Mensive Tanggal 28 states (muncul otomatis 1x/hari per user setiap tanggal 28)
+  const [mensiveData, setMensiveData] = useState<MensiveFetchedData | null>(null);
+  const [mensiveDismissedKey, setMensiveDismissedKey] = useState<string>('');
+  const [mensivePreviewOpen, setMensivePreviewOpen] = useState<boolean>(false);
 
   // Burst particles engine
   const [particles, setParticles] = useState<BurstParticle[]>([]);
@@ -782,6 +801,89 @@ export default function App() {
   const kenatBirthday = computeBirthdayInfo(2005, 0, 7, todayTick);
   const faizBirthday = computeBirthdayInfo(2005, 2, 18, todayTick);
 
+  const todayMensiveKey = currentUser
+    ? `keiz_mensive_seen_${currentUser}_${todayTick.getFullYear()}-${String(
+        todayTick.getMonth() + 1
+      ).padStart(2, '0')}-${String(todayTick.getDate()).padStart(2, '0')}`
+    : '';
+
+  const isDate28 = todayTick.getDate() === 28;
+
+  const hasSeenMensiveToday = (() => {
+    if (!todayMensiveKey) return true;
+    if (mensiveDismissedKey === todayMensiveKey) return true;
+    try {
+      return localStorage.getItem(todayMensiveKey) === '1';
+    } catch {
+      return false;
+    }
+  })();
+
+  useEffect(() => {
+    if (
+      !supabaseReady ||
+      !currentUser ||
+      ((!isDate28 || hasSeenMensiveToday) && !mensivePreviewOpen)
+    ) {
+      return;
+    }
+    let cancelled = false;
+    void fetchMensiveRemoteData(profile).then((res) => {
+      if (!cancelled) {
+        setMensiveData(res);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    supabaseReady,
+    currentUser,
+    isDate28,
+    hasSeenMensiveToday,
+    mensivePreviewOpen,
+    profile,
+  ]);
+
+  const mensiveTargetDate = isDate28
+    ? todayTick
+    : new Date(
+        todayTick.getFullYear(),
+        todayTick.getDate() > 28
+          ? todayTick.getMonth() + 1
+          : todayTick.getMonth(),
+        28
+      );
+
+  const mensiveMetrics = computeMensiveMetrics(
+    mensiveData?.coupleStart ?? DEFAULT_COUPLE_START,
+    mensiveTargetDate
+  );
+
+  const showMensivePopup = Boolean(
+    supabaseReady &&
+      currentUser &&
+      mensiveData &&
+      (mensivePreviewOpen ||
+        (isDate28 && mensiveMetrics.isMensiveDay && !hasSeenMensiveToday))
+  );
+
+  const markMensiveSeenToday = () => {
+    setMensivePreviewOpen(false);
+    if (!isDate28 || !todayMensiveKey) return;
+    try {
+      localStorage.setItem(todayMensiveKey, '1');
+    } catch {
+      // ignore
+    }
+    setMensiveDismissedKey(todayMensiveKey);
+  };
+
+  const handleMensiveClose = () => {
+    soundFX.playClick();
+    markMensiveSeenToday();
+  };
+
   const handleJoinPartnerNobar = () => {
     setNobarJoinSignal(Date.now());
     openSection('nobar');
@@ -979,6 +1081,18 @@ export default function App() {
             callMusicVolume={callMusicVolume}
             onCallMusicVolumeChange={setCallMusicVolume}
             musicActiveTitle={music.isPlaying ? music.activeSong?.title : undefined}
+          />
+          <MensivePopupModal
+            open={showMensivePopup}
+            currentUser={currentUser}
+            monthsCount={mensiveMetrics.monthsCount}
+            totalDays={mensiveMetrics.totalDays}
+            kenatPhoto={mensiveData?.kenatPhoto || profile.kenatPhoto}
+            faizPhoto={mensiveData?.faizPhoto || profile.faizPhoto}
+            kenatName={mensiveData?.kenatName || profile.kenatName}
+            faizName={mensiveData?.faizName || profile.faizName}
+            lettersRows={mensiveData?.lettersRows ?? []}
+            onClose={handleMensiveClose}
           />
         </>
       )}
@@ -1352,6 +1466,29 @@ export default function App() {
                     </div>
                     <ChevronRight className="h-5 w-5 shrink-0 text-[#D81B6E]" />
                   </button>
+
+                  {/* Full-width Love Letter Card (col-span-2) */}
+                  <button
+                    type="button"
+                    onClick={() => openSection('love-letter')}
+                    className="keiz-sticker-card menu-card-bucin col-span-2 relative flex items-center justify-between gap-3 bg-[#FFF4F8] p-[14px] text-left cursor-pointer"
+                  >
+                    <div className="flex items-center gap-3.5">
+                      <div className="menu-icon flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-[#FFD6E7] bg-[#FFE3EE] shadow-xs">
+                        <AppleEmoji emoji="💌" size={26} />
+                      </div>
+                      <div>
+                        <p className="font-display flex items-center gap-1.5 text-[17px] font-extrabold leading-tight text-[#2D0A1E]">
+                          <span>Love Letter</span>
+                          <AppleEmoji emoji="💌" size={17} />
+                        </p>
+                        <p className="text-[12px] font-semibold leading-tight text-[#8A6A7A]">
+                          surat cinta kenat dan faiz
+                        </p>
+                      </div>
+                    </div>
+                    <ChevronRight className="h-5 w-5 shrink-0 text-[#D81B6E]" />
+                  </button>
                 </div>
               </div>
 
@@ -1558,6 +1695,15 @@ export default function App() {
                     onBack={() => openSection('home')}
                   />
                 )}
+                {section === 'love-letter' && (
+                  <LoveLetterView
+                    currentUser={currentUser}
+                    profile={profile}
+                    todayTick={todayTick}
+                    onBack={() => openSection('home')}
+                    onHeartBurstAt={handleHeartBurstAt}
+                  />
+                )}
               </div>
             </main>
           )}
@@ -1699,6 +1845,21 @@ export default function App() {
                     <Volume2 className="h-4 w-4" /> Nyala
                   </>
                 )}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                soundFX.playClick();
+                setShowSettings(false);
+                setMensivePreviewOpen(true);
+              }}
+              className="btn-bucin flex min-h-[46px] w-full items-center justify-between rounded-2xl border border-[#FFD6E7] bg-[#FFF2F7] px-4 text-xs font-bold text-[#2D0A1E] cursor-pointer"
+            >
+              <span>Preview Pop-Up Mensive</span>
+              <span className="flex items-center gap-1.5 text-[#E91E7A]">
+                <Heart className="h-4 w-4 fill-[#FF2E7E] text-[#FF2E7E]" /> Lihat
               </span>
             </button>
 

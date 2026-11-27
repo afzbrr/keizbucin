@@ -8,7 +8,8 @@ export type AppSection =
   | 'nobar'
   | 'unek'
   | 'galeri'
-  | 'game';
+  | 'game'
+  | 'love-letter';
 
 export interface YTPlayerInstance {
   loadVideoById: (videoId: string, startSeconds?: number) => void;
@@ -156,7 +157,8 @@ export type PresenceActivity =
   | 'di Profil'
   | 'di Album'
   | 'di Unek Unek'
-  | 'di Game';
+  | 'di Game'
+  | 'di Love Letter';
 
 export type GameRoomStatus = 'waiting' | 'playing' | 'finished';
 

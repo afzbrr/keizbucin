@@ -414,3 +414,69 @@
   will-change: transform;
 }
 
+/* MENSIVE POPUP CONFETTI */
+@keyframes mensiveHeartFall {
+  0% {
+    transform: translate3d(0, -12vh, 0) rotate(0deg) scale(0.85);
+    opacity: 0;
+  }
+  10% {
+    opacity: 0.95;
+  }
+  85% {
+    opacity: 0.9;
+  }
+  100% {
+    transform: translate3d(var(--drift-x, 18px), 110vh, 0) rotate(320deg) scale(1.05);
+    opacity: 0;
+  }
+}
+
+.mensive-heart-confetti {
+  animation: mensiveHeartFall linear infinite;
+  will-change: transform, opacity;
+}
+
+/* LOVE LETTER ENVELOPE & PAPER */
+@keyframes loveEnvelopeFlap {
+  0% {
+    transform: rotateX(0deg);
+  }
+  100% {
+    transform: rotateX(180deg);
+  }
+}
+
+@keyframes loveLetterPeek {
+  0% {
+    transform: translateY(18px) scale(0.96);
+    opacity: 0;
+  }
+  100% {
+    transform: translateY(-10px) scale(1);
+    opacity: 1;
+  }
+}
+
+.love-envelope-flap-open {
+  transform-origin: top center;
+  animation: loveEnvelopeFlap 0.48s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.love-letter-peek {
+  animation: loveLetterPeek 0.45s cubic-bezier(0.22, 1, 0.36, 1) 0.14s forwards;
+}
+
+.love-letter-paper {
+  background-color: #FFFCFD;
+  background-image:
+    repeating-linear-gradient(
+      to bottom,
+      transparent 0px,
+      transparent 27px,
+      rgba(255, 182, 213, 0.28) 28px
+    );
+}
+
+
+
