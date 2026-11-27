@@ -241,7 +241,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
           (inserted.type !== 'text' &&
             inserted.type !== 'image' &&
             inserted.type !== 'voice') ||
-          inserted.message.startsWith('[Unek-Unek]')
+          inserted.message.startsWith('[Unek-Unek]') ||
+          inserted.message.startsWith('[KEIZ_SYNC]')
         ) {
           return;
         }
@@ -266,7 +267,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
           (updated.type !== 'text' &&
             updated.type !== 'image' &&
             updated.type !== 'voice') ||
-          updated.message.startsWith('[Unek-Unek]')
+          updated.message.startsWith('[Unek-Unek]') ||
+          updated.message.startsWith('[KEIZ_SYNC]')
         ) {
           return;
         }

@@ -1721,6 +1721,8 @@ function mapChatRow(row: Record<string, unknown>, idx = 0): ChatMessage {
     'nobar_chat',
     'wallpaper_chat',
     'wallpaper_nobar',
+    'mensive_sync',
+    'love_letter_sync',
   ]);
   const inferredType = validTypes.has(rawType)
     ? (rawType as ChatMessage['type'])
@@ -1822,7 +1824,8 @@ export async function fetchChats(currentUser?: Role): Promise<ChatMessage[]> {
             const r = m.receiver.toLowerCase();
             const isValidType =
               (m.type === 'text' || m.type === 'image' || m.type === 'voice') &&
-              !m.message.startsWith('[Unek-Unek]');
+              !m.message.startsWith('[Unek-Unek]') &&
+              !m.message.startsWith('[KEIZ_SYNC]');
             if (!isValidType) return false;
             if (userLower && partnerLower) {
               return (
@@ -2667,6 +2670,7 @@ export function subscribeIncomingChatNotification(
     if (
       (msg.type !== 'text' && msg.type !== 'image' && msg.type !== 'voice') ||
       msg.message.startsWith('[Unek-Unek]') ||
+      msg.message.startsWith('[KEIZ_SYNC]') ||
       msg.is_deleted
     ) {
       return;
@@ -2714,6 +2718,375 @@ export function subscribeIncomingChatNotification(
     localChannel?.removeEventListener('message', handleLocal);
     if (notifChan && activeClient) {
       activeClient.removeChannel(notifChan);
+    }
+  };
+}
+
+// ---------- MENSIVE & LOVE LETTER CROSS-DEVICE SYNC (via keiz_chat + Realtime) ----------
+const KEIZ_SYNC_PREFIX = '[KEIZ_SYNC]';
+
+export type KeizSyncScope = 'mensive' | 'love_letter';
+
+export type KeizSyncEventPayload =
+  | {
+      v: 1;
+      scope: 'mensive';
+      kind: 'comment';
+      monthsCount: number;
+      commentId: string;
+      name: string;
+      text: string;
+      createdAt: string;
+    }
+  | {
+      v: 1;
+      scope: 'mensive';
+      kind: 'like';
+      monthsCount: number;
+      commentId: string;
+      actionId: string;
+      actor: string;
+      createdAt: string;
+    }
+  | {
+      v: 1;
+      scope: 'mensive';
+      kind: 'comment_react';
+      monthsCount: number;
+      commentId: string;
+      emoji: string;
+      actionId: string;
+      actor: string;
+      createdAt: string;
+    }
+  | {
+      v: 1;
+      scope: 'mensive';
+      kind: 'letter_react';
+      monthsCount: number;
+      emoji: string;
+      actionId: string;
+      actor: string;
+      createdAt: string;
+    }
+  | {
+      v: 1;
+      scope: 'love_letter';
+      kind: 'comment';
+      letterId: string;
+      commentId: string;
+      name: string;
+      text: string;
+      createdAt: string;
+    }
+  | {
+      v: 1;
+      scope: 'love_letter';
+      kind: 'like';
+      letterId: string;
+      commentId: string;
+      actionId: string;
+      actor: string;
+      createdAt: string;
+    }
+  | {
+      v: 1;
+      scope: 'love_letter';
+      kind: 'comment_react';
+      letterId: string;
+      commentId: string;
+      emoji: string;
+      actionId: string;
+      actor: string;
+      createdAt: string;
+    }
+  | {
+      v: 1;
+      scope: 'love_letter';
+      kind: 'letter_react';
+      letterId: string;
+      emoji: string;
+      actionId: string;
+      actor: string;
+      createdAt: string;
+    };
+
+const activeKeizSyncChannels: Partial<Record<KeizSyncScope, RealtimeChannel>> = {};
+const activeKeizSyncChannelReady: Partial<Record<KeizSyncScope, boolean>> = {};
+
+function parseKeizSyncRow(
+  row: Record<string, unknown> | null | undefined,
+  expectedScope?: KeizSyncScope
+): KeizSyncEventPayload | null {
+  if (!row || row.is_deleted) return null;
+  const rawMsg = String(
+    row.message ?? row.text ?? row.isi ?? row.content ?? row.pesan ?? row.body ?? ''
+  ).trim();
+  if (!rawMsg.startsWith(KEIZ_SYNC_PREFIX)) return null;
+  try {
+    const parsed = JSON.parse(
+      rawMsg.slice(KEIZ_SYNC_PREFIX.length)
+    ) as KeizSyncEventPayload;
+    if (!parsed || typeof parsed !== 'object') return null;
+    if (expectedScope && parsed.scope !== expectedScope) return null;
+    if (parsed.scope !== 'mensive' && parsed.scope !== 'love_letter') return null;
+    if (!parsed.createdAt && typeof row.created_at === 'string') {
+      parsed.createdAt = row.created_at;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export async function fetchKeizSyncEvents<T extends KeizSyncEventPayload>(
+  scope: KeizSyncScope
+): Promise<T[]> {
+  const sb = activeClient;
+  if (!sb) return [];
+  const dbType = scope === 'mensive' ? 'mensive_sync' : 'love_letter_sync';
+
+  try {
+    const schema = await discoverChatSchema(sb);
+    const hasTypeCol = !schema || schema.columns.has('type');
+    const msgCol = schema?.messageCol || 'message';
+
+    let query = sb.from(CHAT_TABLE).select('*');
+    if (hasTypeCol) {
+      query = query.or(`type.eq.${dbType},${msgCol}.ilike.${KEIZ_SYNC_PREFIX}%`);
+    } else {
+      query = query.ilike(msgCol, `${KEIZ_SYNC_PREFIX}%`);
+    }
+
+    let { data, error } = await query
+      .order('created_at', { ascending: true })
+      .limit(1000);
+
+    if (error) {
+      const retry1 = await sb
+        .from(CHAT_TABLE)
+        .select('*')
+        .ilike(msgCol, `${KEIZ_SYNC_PREFIX}%`)
+        .limit(1000);
+      if (!retry1.error && Array.isArray(retry1.data)) {
+        data = retry1.data;
+        error = null;
+      } else {
+        const retry2 = await sb.from(CHAT_TABLE).select('*').limit(1000);
+        data = retry2.data;
+        error = retry2.error;
+      }
+    }
+
+    if (error || !Array.isArray(data)) return [];
+
+    const events: T[] = [];
+    for (const item of data) {
+      const parsed = parseKeizSyncRow(item as Record<string, unknown>, scope);
+      if (parsed) events.push(parsed as T);
+    }
+
+    events.sort(
+      (a, b) =>
+        new Date(a.createdAt || 0).getTime() -
+        new Date(b.createdAt || 0).getTime()
+    );
+    return events;
+  } catch {
+    return [];
+  }
+}
+
+export async function publishKeizSyncEvent(
+  sender: Role,
+  payload: KeizSyncEventPayload
+): Promise<boolean> {
+  localChannel?.postMessage({ type: 'keiz_sync_event', payload });
+
+  const bChan = activeKeizSyncChannels[payload.scope];
+  if (bChan && activeKeizSyncChannelReady[payload.scope]) {
+    bChan
+      .send({
+        type: 'broadcast',
+        event: 'keiz_sync_event',
+        payload,
+      })
+      .catch(() => {});
+  }
+
+  const sb = activeClient;
+  if (!sb) return false;
+
+  const receiver: Role = sender === 'faiz' ? 'kenat' : 'faiz';
+  const dbType =
+    payload.scope === 'mensive' ? 'mensive_sync' : 'love_letter_sync';
+  const serialized = `${KEIZ_SYNC_PREFIX}${JSON.stringify(payload)}`;
+
+  try {
+    const schema = await discoverChatSchema(sb);
+    const senderVal = formatSenderForDb(sender, schema);
+    const receiverVal = formatSenderForDb(receiver, schema);
+
+    const attemptPayload: Record<string, unknown> = {};
+    if (schema) {
+      if (schema.columns.has(schema.senderCol)) {
+        attemptPayload[schema.senderCol] = senderVal;
+      }
+      if (schema.receiverCol && schema.columns.has(schema.receiverCol)) {
+        attemptPayload[schema.receiverCol] = receiverVal;
+      }
+      if (schema.columns.has(schema.messageCol)) {
+        attemptPayload[schema.messageCol] = serialized;
+      }
+      if (schema.columns.has('type')) attemptPayload.type = dbType;
+      if (schema.columns.has('is_read')) attemptPayload.is_read = true;
+      if (schema.columns.has('is_deleted')) attemptPayload.is_deleted = false;
+      if (schema.columns.has('created_at')) {
+        attemptPayload.created_at = payload.createdAt;
+      }
+    } else {
+      attemptPayload.sender = senderVal;
+      attemptPayload.receiver = receiverVal;
+      attemptPayload.message = serialized;
+      attemptPayload.type = dbType;
+      attemptPayload.is_read = true;
+      attemptPayload.is_deleted = false;
+      attemptPayload.created_at = payload.createdAt;
+    }
+
+    let useGeneratedId = false;
+    let triedTextTypeFallback = false;
+    let triedDeleteTypeFallback = false;
+
+    for (let attempt = 0; attempt < 8; attempt++) {
+      if (useGeneratedId) {
+        attemptPayload.id = makeUuid();
+      } else {
+        delete attemptPayload.id;
+      }
+
+      const { error } = await sb.from(CHAT_TABLE).insert([attemptPayload]);
+      if (!error) {
+        return true;
+      }
+
+      const errMsg = String(error.message || '');
+      const errCode = String(error.code || '');
+
+      const missingColMatch =
+        errMsg.match(/Could not find the '([^']+)' column/i) ||
+        errMsg.match(/column "([^"]+)" of relation "[^"]+" does not exist/i);
+      if (missingColMatch?.[1] && missingColMatch[1] in attemptPayload) {
+        const badCol = missingColMatch[1];
+        delete attemptPayload[badCol];
+        cachedChatSchema?.columns.delete(badCol);
+        continue;
+      }
+
+      if (
+        !useGeneratedId &&
+        (errMsg.includes('"id"') || errCode === '23502')
+      ) {
+        useGeneratedId = true;
+        continue;
+      }
+
+      if (!triedTextTypeFallback && 'type' in attemptPayload) {
+        triedTextTypeFallback = true;
+        attemptPayload.type = 'text';
+        continue;
+      }
+
+      if (!triedDeleteTypeFallback && 'type' in attemptPayload) {
+        triedDeleteTypeFallback = true;
+        delete attemptPayload.type;
+        continue;
+      }
+
+      break;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+export function subscribeKeizSyncEvents(
+  scope: KeizSyncScope,
+  onEvent: (ev?: KeizSyncEventPayload) => void
+): () => void {
+  const handleLocal = (ev: MessageEvent) => {
+    if (
+      ev.data?.type === 'keiz_sync_event' &&
+      ev.data?.payload?.scope === scope
+    ) {
+      onEvent(ev.data.payload as KeizSyncEventPayload);
+    }
+  };
+  localChannel?.addEventListener('message', handleLocal);
+
+  let chan: RealtimeChannel | null = null;
+  const setup = () => {
+    const sb = activeClient;
+    activeKeizSyncChannelReady[scope] = false;
+    if (chan && sb) {
+      if (activeKeizSyncChannels[scope] === chan) {
+        delete activeKeizSyncChannels[scope];
+      }
+      sb.removeChannel(chan);
+      chan = null;
+    }
+    if (!sb) return;
+    chan = sb
+      .channel(`keiz_sync_rt_${scope}`, {
+        config: { broadcast: { self: false } },
+      })
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: CHAT_TABLE },
+        (payload) => {
+          const parsed = parseKeizSyncRow(
+            payload.new as Record<string, unknown>,
+            scope
+          );
+          if (parsed) onEvent(parsed);
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: CHAT_TABLE },
+        (payload) => {
+          const parsed = parseKeizSyncRow(
+            payload.new as Record<string, unknown>,
+            scope
+          );
+          if (parsed) onEvent(parsed);
+        }
+      )
+      .on('broadcast', { event: 'keiz_sync_event' }, ({ payload }) => {
+        const parsed = payload as KeizSyncEventPayload | undefined;
+        if (parsed && parsed.scope === scope) {
+          onEvent(parsed);
+        }
+      })
+      .subscribe((status) => {
+        activeKeizSyncChannelReady[scope] = status === 'SUBSCRIBED';
+      });
+    activeKeizSyncChannels[scope] = chan;
+  };
+
+  setup();
+  const unsubReconfig = onSupabaseReconfigured(setup);
+
+  return () => {
+    unsubReconfig();
+    localChannel?.removeEventListener('message', handleLocal);
+    activeKeizSyncChannelReady[scope] = false;
+    if (chan && activeClient) {
+      activeClient.removeChannel(chan);
+      if (activeKeizSyncChannels[scope] === chan) {
+        delete activeKeizSyncChannels[scope];
+      }
     }
   };
 }

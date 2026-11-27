@@ -10,7 +10,14 @@ import {
   Sparkles,
   X,
 } from 'lucide-react';
-import { fetchAlbumPhotos, getSupabaseClient } from '../supabaseClient';
+import {
+  type KeizSyncEventPayload,
+  fetchAlbumPhotos,
+  fetchKeizSyncEvents,
+  getSupabaseClient,
+  publishKeizSyncEvent,
+  subscribeKeizSyncEvents,
+} from '../supabaseClient';
 import { soundFX } from '../sound';
 import type { CoupleProfile, GalleryPhoto, Role } from '../types';
 import { AppleEmoji, AppleTextWithEmojis } from './AppleEmoji';
@@ -18,6 +25,7 @@ import {
   DEFAULT_COUPLE_START,
   type SimpleDateParts,
   parseCoupleDate,
+  rescueTrappedLocalFeedback,
 } from './MensivePopupModal';
 
 const LOVE_REACT_EMOJIS = [
@@ -389,6 +397,34 @@ async function fetchLoveLettersFromDb(
   return buildFallbackLetters(todayYmd);
 }
 
+type LoveSyncEvent = Extract<KeizSyncEventPayload, { scope: 'love_letter' }>;
+
+function makeLoveSyncId(prefix: string): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return `${prefix}-${crypto.randomUUID()}`;
+  }
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function getLoveSyncEventKey(ev: LoveSyncEvent): string {
+  return ev.kind === 'comment' ? `comment:${ev.commentId}` : `act:${ev.actionId}`;
+}
+
+let legacyLoveCommentsTableMissing = false;
+let legacyLoveReactionsTableMissing = false;
+
+function matchesLoveLetterTarget(
+  rowLetterId: string,
+  activeLetterId: string,
+  isPrimaryLetter: boolean,
+  otherLetterIds: Set<string>
+): boolean {
+  if (!rowLetterId) return isPrimaryLetter;
+  if (rowLetterId === activeLetterId) return true;
+  if (isPrimaryLetter && !otherLetterIds.has(rowLetterId)) return true;
+  return false;
+}
+
 function normalizeLoveCommentRow(
   row: Record<string, unknown>,
   letterId: string,
@@ -403,15 +439,22 @@ function normalizeLoveCommentRow(
       'sender',
       'user_name',
       'username',
+      'user',
+      'pengirim',
+      'dari',
+      'from',
     ]) || 'Sayang';
   const text = pickFirstString(row, [
     'comment',
     'komentar',
+    'komen',
     'content',
     'message',
     'isi',
     'text',
     'body',
+    'pesan',
+    'ucapan',
   ]);
   if (!id || !text) return null;
 
@@ -423,7 +466,7 @@ function normalizeLoveCommentRow(
 
   return {
     id,
-    letterId: String(row.letter_id ?? letterId),
+    letterId: String(row.letter_id ?? row.surat_id ?? letterId),
     name,
     text,
     createdAt,
@@ -432,315 +475,228 @@ function normalizeLoveCommentRow(
   };
 }
 
-async function loadLetterCommentsAndReactions(letterId: string): Promise<{
+function foldLoveLetterEvents(params: {
+  letterId: string;
+  isPrimaryLetter: boolean;
+  otherLetterIds: Set<string>;
+  events: LoveSyncEvent[];
+  legacyComments: LoveLetterCommentItem[];
+  legacyLetterReactions: Record<string, number>;
+}): {
+  comments: LoveLetterCommentItem[];
+  letterReactions: Record<string, number>;
+} {
+  const {
+    letterId,
+    isPrimaryLetter,
+    otherLetterIds,
+    events,
+    legacyComments,
+    legacyLetterReactions,
+  } = params;
+  const seenKeys = new Set<string>();
+  const commentMap = new Map<string, LoveLetterCommentItem>();
+
+  for (const lc of legacyComments) {
+    commentMap.set(lc.id, {
+      ...lc,
+      reactions: { ...(lc.reactions || {}) },
+    });
+  }
+
+  const letterReactions: Record<string, number> = { ...legacyLetterReactions };
+  const commentReactTrack = new Map<string, { emoji: string; count: number }>();
+
+  const ordered = events
+    .filter((ev) =>
+      matchesLoveLetterTarget(
+        ev.letterId || '',
+        letterId,
+        isPrimaryLetter,
+        otherLetterIds
+      )
+    )
+    .sort(
+      (a, b) =>
+        new Date(a.createdAt || 0).getTime() -
+        new Date(b.createdAt || 0).getTime()
+    );
+
+  for (const ev of ordered) {
+    const key = getLoveSyncEventKey(ev);
+    if (seenKeys.has(key)) continue;
+    seenKeys.add(key);
+
+    if (ev.kind === 'comment') {
+      if (!commentMap.has(ev.commentId)) {
+        commentMap.set(ev.commentId, {
+          id: ev.commentId,
+          letterId: ev.letterId,
+          name: ev.name || 'Sayang',
+          text: ev.text,
+          createdAt: ev.createdAt || new Date().toISOString(),
+          likes: 0,
+          reactions: {},
+        });
+      }
+    } else if (ev.kind === 'like') {
+      const target = commentMap.get(ev.commentId);
+      if (target) {
+        target.likes += 1;
+      }
+    } else if (ev.kind === 'letter_react') {
+      if (ev.emoji) {
+        letterReactions[ev.emoji] = (letterReactions[ev.emoji] ?? 0) + 1;
+      }
+    } else if (ev.kind === 'comment_react') {
+      if (!ev.emoji) continue;
+      const cur = commentReactTrack.get(ev.commentId);
+      if (cur && cur.emoji === ev.emoji) {
+        cur.count += 1;
+      } else {
+        commentReactTrack.set(ev.commentId, { emoji: ev.emoji, count: 1 });
+      }
+    }
+  }
+
+  for (const [commentId, rx] of commentReactTrack.entries()) {
+    const target = commentMap.get(commentId);
+    if (target && rx.emoji && rx.count > 0) {
+      target.reactions = { [rx.emoji]: rx.count };
+    }
+  }
+
+  // Urutan komen terbaru di atas
+  const comments = Array.from(commentMap.values()).sort(
+    (a, b) =>
+      new Date(b.createdAt || 0).getTime() -
+      new Date(a.createdAt || 0).getTime()
+  );
+
+  return { comments, letterReactions };
+}
+
+async function fetchLegacyLoveLetterData(
+  letterId: string,
+  isPrimaryLetter: boolean,
+  otherLetterIds: Set<string>
+): Promise<{
   comments: LoveLetterCommentItem[];
   letterReactions: Record<string, number>;
 }> {
-  const cachedComments = readCachedComments(letterId);
-  const cachedRx = readCachedReactions(letterId);
   const sb = getSupabaseClient();
-
-  if (!sb) {
-    return {
-      comments: cachedComments.map((c) => ({
-        ...c,
-        reactions: c.reactions || cachedRx.commentReactions[c.id] || {},
-      })),
-      letterReactions: cachedRx.letterReactions,
-    };
-  }
+  if (!sb) return { comments: [], letterReactions: {} };
 
   const letterReactions: Record<string, number> = {};
   const commentReactionMap: Record<string, Record<string, number>> = {};
-  let reactionsLoaded = false;
 
-  try {
-    const { data, error } = await sb
-      .from('love_letter_reactions')
-      .select('*')
-      .eq('letter_id', letterId)
-      .limit(500);
+  if (!legacyLoveReactionsTableMissing) {
+    try {
+      const { data, error } = await sb
+        .from('love_letter_reactions')
+        .select('*')
+        .limit(500);
 
-    if (!error && Array.isArray(data)) {
-      reactionsLoaded = true;
-      for (const item of data) {
-        const row = item as Record<string, unknown>;
-        const emoji = pickFirstString(row, ['emoji', 'reaction', 'emot']);
-        if (!emoji) continue;
-        const explicitCount =
-          typeof row.count === 'number'
-            ? row.count
-            : typeof row.jumlah === 'number'
-            ? row.jumlah
-            : typeof row.total === 'number'
-            ? row.total
-            : null;
-        const inc =
-          explicitCount !== null && explicitCount > 0 ? explicitCount : 1;
-
-        const commentIdRaw = row.comment_id ?? row.love_letter_comment_id;
-        const commentId =
-          commentIdRaw !== null &&
-          commentIdRaw !== undefined &&
-          String(commentIdRaw).trim() !== ''
-            ? String(commentIdRaw).trim()
-            : '';
-
-        if (!commentId) {
-          letterReactions[emoji] = (letterReactions[emoji] ?? 0) + inc;
-        } else {
-          if (!commentReactionMap[commentId]) {
-            commentReactionMap[commentId] = {};
+      if (error) {
+        if (error.code === '42P01' || error.code === 'PGRST205') {
+          legacyLoveReactionsTableMissing = true;
+        }
+      } else if (Array.isArray(data)) {
+        for (const item of data) {
+          const row = item as Record<string, unknown>;
+          const rowLetterId = String(row.letter_id ?? row.surat_id ?? '').trim();
+          if (
+            !matchesLoveLetterTarget(
+              rowLetterId,
+              letterId,
+              isPrimaryLetter,
+              otherLetterIds
+            )
+          ) {
+            continue;
           }
-          commentReactionMap[commentId][emoji] =
-            (commentReactionMap[commentId][emoji] ?? 0) + inc;
+
+          const emoji = pickFirstString(row, [
+            'emoji',
+            'reaction',
+            'emot',
+            'emoticon',
+          ]);
+          if (!emoji) continue;
+          const explicitCount =
+            typeof row.count === 'number'
+              ? row.count
+              : typeof row.jumlah === 'number'
+              ? row.jumlah
+              : typeof row.total === 'number'
+              ? row.total
+              : null;
+          const inc =
+            explicitCount !== null && explicitCount > 0 ? explicitCount : 1;
+
+          const commentIdRaw =
+            row.comment_id ?? row.love_letter_comment_id ?? row.target_id;
+          const commentId =
+            commentIdRaw !== null &&
+            commentIdRaw !== undefined &&
+            String(commentIdRaw).trim() !== ''
+              ? String(commentIdRaw).trim()
+              : '';
+
+          if (!commentId || commentId === 'letter' || commentId === 'surat') {
+            letterReactions[emoji] = (letterReactions[emoji] ?? 0) + inc;
+          } else {
+            commentReactionMap[commentId] = {
+              [emoji]: (commentReactionMap[commentId]?.[emoji] ?? 0) + inc,
+            };
+          }
         }
       }
+    } catch {
+      legacyLoveReactionsTableMissing = true;
     }
-  } catch {
-    // Fallback to cached reactions if table missing
   }
 
-  let commentRows: Record<string, unknown>[] | null = null;
-  try {
-    const res1 = await sb
-      .from('love_letter_comments')
-      .select('*')
-      .eq('letter_id', letterId)
-      .order('created_at', { ascending: false })
-      .limit(200);
-
-    if (!res1.error && Array.isArray(res1.data)) {
-      commentRows = res1.data as Record<string, unknown>[];
-    } else {
-      const res2 = await sb
-        .from('love_letter_comments')
-        .select('*')
-        .eq('letter_id', letterId)
-        .limit(200);
-      if (!res2.error && Array.isArray(res2.data)) {
-        commentRows = (res2.data as Record<string, unknown>[]).reverse();
-      }
-    }
-  } catch {
-    // Fallback to cached comments if table missing
-  }
-
-  const effectiveLetterReactions = reactionsLoaded
-    ? letterReactions
-    : cachedRx.letterReactions;
-  const effectiveCommentReactions = reactionsLoaded
-    ? commentReactionMap
-    : cachedRx.commentReactions;
-
-  if (commentRows) {
-    const normalized: LoveLetterCommentItem[] = [];
-    for (const r of commentRows) {
-      const item = normalizeLoveCommentRow(
-        r,
-        letterId,
-        effectiveCommentReactions
-      );
-      if (item) normalized.push(item);
-    }
-    normalized.sort(
-      (a, b) =>
-        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-    );
-    writeCachedComments(letterId, normalized);
-    if (reactionsLoaded) {
-      writeCachedReactions(letterId, letterReactions, commentReactionMap);
-    }
-    return {
-      comments: normalized,
-      letterReactions: effectiveLetterReactions,
-    };
-  }
-
-  return {
-    comments: cachedComments.map((c) => ({
-      ...c,
-      reactions:
-        effectiveCommentReactions[c.id] ??
-        c.reactions ??
-        {},
-    })),
-    letterReactions: effectiveLetterReactions,
-  };
-}
-
-async function insertLoveLetterCommentRemote(
-  letterId: string,
-  name: string,
-  text: string
-): Promise<LoveLetterCommentItem | null> {
-  const sb = getSupabaseClient();
-  if (!sb) return null;
-
-  const payloads: Record<string, unknown>[] = [
-    { letter_id: letterId, name, comment: text, likes: 0 },
-    { letter_id: letterId, name, comment: text },
-    { letter_id: letterId, nama: name, komentar: text, likes: 0 },
-    { letter_id: letterId, nama: name, komentar: text },
-    { letter_id: letterId, author: name, content: text, likes: 0 },
-    { letter_id: letterId, author: name, message: text },
-    { letter_id: letterId, nama: name, isi: text },
-  ];
-
-  for (const payload of payloads) {
+  const comments: LoveLetterCommentItem[] = [];
+  if (!legacyLoveCommentsTableMissing) {
     try {
       const { data, error } = await sb
         .from('love_letter_comments')
-        .insert(payload)
         .select('*')
-        .single();
-      if (!error && data) {
-        const normalized = normalizeLoveCommentRow(
-          data as Record<string, unknown>,
-          letterId,
-          {}
-        );
-        if (normalized) return normalized;
+        .limit(300);
+
+      if (error) {
+        if (error.code === '42P01' || error.code === 'PGRST205') {
+          legacyLoveCommentsTableMissing = true;
+        }
+      } else if (Array.isArray(data)) {
+        for (const r of data) {
+          const row = r as Record<string, unknown>;
+          const rowLetterId = String(row.letter_id ?? row.surat_id ?? '').trim();
+          if (
+            !matchesLoveLetterTarget(
+              rowLetterId,
+              letterId,
+              isPrimaryLetter,
+              otherLetterIds
+            )
+          ) {
+            continue;
+          }
+          const item = normalizeLoveCommentRow(
+            row,
+            letterId,
+            commentReactionMap
+          );
+          if (item) comments.push(item);
+        }
       }
     } catch {
-      // Try next schema column variant
-    }
-  }
-  return null;
-}
-
-async function incrementLoveCommentLikeRemote(
-  commentId: string,
-  nextLikes: number
-): Promise<void> {
-  const sb = getSupabaseClient();
-  if (!sb || commentId.startsWith('local-')) return;
-
-  const payloads: Record<string, unknown>[] = [
-    { likes: nextLikes },
-    { likes_count: nextLikes },
-    { like_count: nextLikes },
-  ];
-
-  for (const payload of payloads) {
-    try {
-      const { error } = await sb
-        .from('love_letter_comments')
-        .update(payload)
-        .eq('id', commentId);
-      if (!error) return;
-    } catch {
-      // Try next column variant
-    }
-  }
-}
-
-async function saveLoveLetterReactionRemote(params: {
-  letterId: string;
-  commentId: string | null;
-  emoji: string;
-  nextCount: number;
-  userName: string;
-  replaceExistingCommentReaction: boolean;
-}): Promise<void> {
-  const sb = getSupabaseClient();
-  if (!sb) return;
-  if (params.commentId && params.commentId.startsWith('local-')) return;
-
-  // For comments: only 1 emoji react allowed -> if changing emoji, remove old rows for that comment first
-  if (params.commentId && params.replaceExistingCommentReaction) {
-    try {
-      await sb
-        .from('love_letter_reactions')
-        .delete()
-        .eq('letter_id', params.letterId)
-        .eq('comment_id', params.commentId);
-    } catch {
-      // ignore if delete not permitted or column differs
+      legacyLoveCommentsTableMissing = true;
     }
   }
 
-  const payloads: Record<string, unknown>[] = params.commentId
-    ? [
-        {
-          letter_id: params.letterId,
-          comment_id: params.commentId,
-          emoji: params.emoji,
-          user_name: params.userName,
-        },
-        {
-          letter_id: params.letterId,
-          comment_id: params.commentId,
-          emoji: params.emoji,
-        },
-        {
-          letter_id: params.letterId,
-          comment_id: params.commentId,
-          reaction: params.emoji,
-        },
-      ]
-    : [
-        {
-          letter_id: params.letterId,
-          comment_id: null,
-          emoji: params.emoji,
-          user_name: params.userName,
-        },
-        {
-          letter_id: params.letterId,
-          emoji: params.emoji,
-          user_name: params.userName,
-        },
-        {
-          letter_id: params.letterId,
-          comment_id: null,
-          emoji: params.emoji,
-        },
-        {
-          letter_id: params.letterId,
-          emoji: params.emoji,
-        },
-        {
-          letter_id: params.letterId,
-          reaction: params.emoji,
-        },
-      ];
-
-  for (const payload of payloads) {
-    try {
-      const { error } = await sb
-        .from('love_letter_reactions')
-        .insert(payload);
-      if (!error) return;
-    } catch {
-      // Try next payload variant or count update
-    }
-  }
-
-  // Fallback if unique constraint exists with a count column
-  const countPayloads: Record<string, unknown>[] = [
-    { count: params.nextCount },
-    { jumlah: params.nextCount },
-    { total: params.nextCount },
-  ];
-  for (const cp of countPayloads) {
-    try {
-      let query = sb
-        .from('love_letter_reactions')
-        .update(cp)
-        .eq('letter_id', params.letterId)
-        .eq('emoji', params.emoji);
-      if (params.commentId) {
-        query = query.eq('comment_id', params.commentId);
-      } else {
-        query = query.is('comment_id', null);
-      }
-      const { error } = await query;
-      if (!error) return;
-    } catch {
-      // ignore
-    }
-  }
+  return { comments, letterReactions };
 }
 
 interface LoveLetterViewProps {
@@ -788,11 +744,63 @@ export const LoveLetterView: React.FC<LoveLetterViewProps> = ({
   const [commentError, setCommentError] = useState('');
   const [openPickerForId, setOpenPickerForId] = useState<string | null>(null);
   const pickerContainerRef = useRef<HTMLDivElement | null>(null);
+  const pendingEventsRef = useRef<LoveSyncEvent[]>([]);
+  const remoteEventsRef = useRef<LoveSyncEvent[]>([]);
+  const legacySnapshotRef = useRef<{
+    comments: LoveLetterCommentItem[];
+    letterReactions: Record<string, number>;
+  }>({ comments: [], letterReactions: {} });
 
   const todayYmd = toLocalYmd(todayTick);
   const isToday28 = todayTick.getDate() === 28;
   const nextOrCurrent28Ymd = getNextOrCurrent28Ymd(todayTick);
   const monthsCount = computeMensiveMonthCount(coupleStart, todayTick);
+
+  const getLetterMatchMeta = useCallback(
+    (letterId: string) => {
+      const primaryId =
+        letters.find((l) => l.isMensive)?.id ?? letters[0]?.id ?? letterId;
+      const isPrimaryLetter = letterId === primaryId;
+      const otherLetterIds = new Set(
+        letters.filter((l) => l.id !== letterId).map((l) => l.id)
+      );
+      return { isPrimaryLetter, otherLetterIds };
+    },
+    [letters]
+  );
+
+  const recomputeLetterState = useCallback(
+    (letterId: string, persistCache = true) => {
+      const { isPrimaryLetter, otherLetterIds } = getLetterMatchMeta(letterId);
+      const merged = [
+        ...remoteEventsRef.current,
+        ...pendingEventsRef.current,
+      ];
+      const folded = foldLoveLetterEvents({
+        letterId,
+        isPrimaryLetter,
+        otherLetterIds,
+        events: merged,
+        legacyComments: legacySnapshotRef.current.comments,
+        legacyLetterReactions: legacySnapshotRef.current.letterReactions,
+      });
+
+      setComments(folded.comments);
+      setLetterReactions(folded.letterReactions);
+
+      if (persistCache) {
+        writeCachedComments(letterId, folded.comments);
+        const cMap: Record<string, Record<string, number>> = {};
+        for (const c of folded.comments) {
+          if (Object.keys(c.reactions).length > 0) {
+            cMap[c.id] = c.reactions;
+          }
+        }
+        writeCachedReactions(letterId, folded.letterReactions, cMap);
+      }
+    },
+    [getLetterMatchMeta]
+  );
 
   useEffect(() => {
     if (!isToday28 && openedLetter) {
@@ -830,41 +838,111 @@ export const LoveLetterView: React.FC<LoveLetterViewProps> = ({
     void loadInitialData();
   }, [loadInitialData]);
 
-  const refreshActiveLetterDetails = useCallback(async (letterId: string) => {
-    const res = await loadLetterCommentsAndReactions(letterId);
-    setComments(res.comments);
-    setLetterReactions(res.letterReactions);
-  }, []);
+  const refreshActiveLetterDetails = useCallback(
+    async (letterId: string) => {
+      const sb = getSupabaseClient();
+      if (!sb) {
+        const cachedComments = readCachedComments(letterId);
+        const cachedRx = readCachedReactions(letterId);
+        setComments(
+          cachedComments.map((c) => ({
+            ...c,
+            reactions: c.reactions || cachedRx.commentReactions[c.id] || {},
+          }))
+        );
+        setLetterReactions(cachedRx.letterReactions);
+        return;
+      }
+
+      const { isPrimaryLetter, otherLetterIds } = getLetterMatchMeta(letterId);
+      const [remoteEvents, legacy] = await Promise.all([
+        fetchKeizSyncEvents<LoveSyncEvent>('love_letter'),
+        fetchLegacyLoveLetterData(letterId, isPrimaryLetter, otherLetterIds),
+      ]);
+
+      const remoteKeys = new Set(remoteEvents.map(getLoveSyncEventKey));
+      pendingEventsRef.current = pendingEventsRef.current.filter(
+        (ev) => !remoteKeys.has(getLoveSyncEventKey(ev))
+      );
+      remoteEventsRef.current = remoteEvents;
+      legacySnapshotRef.current = legacy;
+      recomputeLetterState(letterId, true);
+    },
+    [getLetterMatchMeta, recomputeLetterState]
+  );
 
   useEffect(() => {
     if (!openedLetter) return;
-    void refreshActiveLetterDetails(openedLetter.id);
+    const activeId = openedLetter.id;
 
-    const sb = getSupabaseClient();
-    if (!sb) return;
+    // Reset state antar surat dan tampilkan cache lokal lebih dulu bila ada
+    remoteEventsRef.current = [];
+    pendingEventsRef.current = [];
+    legacySnapshotRef.current = { comments: [], letterReactions: {} };
 
-    const channel = sb
-      .channel(`love_letter_live_${openedLetter.id}`)
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'love_letter_comments' },
-        () => {
-          void refreshActiveLetterDetails(openedLetter.id);
+    const cachedComments = readCachedComments(activeId);
+    const cachedRx = readCachedReactions(activeId);
+    setComments(
+      cachedComments.map((c) => ({
+        ...c,
+        reactions: c.reactions || cachedRx.commentReactions[c.id] || {},
+      }))
+    );
+    setLetterReactions(cachedRx.letterReactions);
+
+    void rescueTrappedLocalFeedback(currentUser, monthsCount).then(() => {
+      void refreshActiveLetterDetails(activeId);
+    });
+
+    const unsubSync = subscribeKeizSyncEvents('love_letter', (incoming) => {
+      const { isPrimaryLetter, otherLetterIds } = getLetterMatchMeta(activeId);
+      if (
+        incoming &&
+        incoming.scope === 'love_letter' &&
+        matchesLoveLetterTarget(
+          incoming.letterId || '',
+          activeId,
+          isPrimaryLetter,
+          otherLetterIds
+        )
+      ) {
+        const key = getLoveSyncEventKey(incoming);
+        const alreadyHave =
+          remoteEventsRef.current.some((e) => getLoveSyncEventKey(e) === key) ||
+          pendingEventsRef.current.some((e) => getLoveSyncEventKey(e) === key);
+        if (!alreadyHave) {
+          remoteEventsRef.current = [...remoteEventsRef.current, incoming];
+          recomputeLetterState(activeId, true);
         }
-      )
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'love_letter_reactions' },
-        () => {
-          void refreshActiveLetterDetails(openedLetter.id);
-        }
-      )
-      .subscribe();
+      }
+      void refreshActiveLetterDetails(activeId);
+    });
+
+    const pollTimer = window.setInterval(() => {
+      void refreshActiveLetterDetails(activeId);
+    }, 3000);
+
+    const handleWake = () => {
+      if (document.visibilityState === 'visible') {
+        void refreshActiveLetterDetails(activeId);
+      }
+    };
+    window.addEventListener('focus', handleWake);
+    document.addEventListener('visibilitychange', handleWake);
 
     return () => {
-      void sb.removeChannel(channel);
+      unsubSync();
+      window.clearInterval(pollTimer);
+      window.removeEventListener('focus', handleWake);
+      document.removeEventListener('visibilitychange', handleWake);
     };
-  }, [openedLetter, refreshActiveLetterDetails]);
+  }, [
+    openedLetter,
+    currentUser,
+    monthsCount,
+    refreshActiveLetterDetails,
+    recomputeLetterState,
+  ]);
 
   useEffect(() => {
     if (!openPickerForId) return;
@@ -923,6 +1001,23 @@ export const LoveLetterView: React.FC<LoveLetterViewProps> = ({
     }, 560);
   };
 
+  const enqueueAndPublish = async (ev: LoveSyncEvent) => {
+    pendingEventsRef.current = [...pendingEventsRef.current, ev];
+    recomputeLetterState(ev.letterId, true);
+    const ok = await publishKeizSyncEvent(currentUser, ev);
+    if (!ok) {
+      window.setTimeout(() => {
+        const key = getLoveSyncEventKey(ev);
+        if (pendingEventsRef.current.some((p) => getLoveSyncEventKey(p) === key)) {
+          void publishKeizSyncEvent(currentUser, ev).then(() => {
+            void refreshActiveLetterDetails(ev.letterId);
+          });
+        }
+      }, 2000);
+    }
+    void refreshActiveLetterDetails(ev.letterId);
+  };
+
   const handleSendComment = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!openedLetter) return;
@@ -943,47 +1038,19 @@ export const LoveLetterView: React.FC<LoveLetterViewProps> = ({
     setSubmittingComment(true);
     soundFX.playPop();
 
-    const tempId = `local-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-    const optimisticItem: LoveLetterCommentItem = {
-      id: tempId,
+    const ev: LoveSyncEvent = {
+      v: 1,
+      scope: 'love_letter',
+      kind: 'comment',
       letterId: openedLetter.id,
+      commentId: makeLoveSyncId('llc'),
       name: cleanName,
       text: cleanText,
       createdAt: new Date().toISOString(),
-      likes: 0,
-      reactions: {},
     };
 
-    // Urutan komen terbaru di atas
-    setComments((prev) => {
-      const next = [optimisticItem, ...prev];
-      writeCachedComments(openedLetter.id, next);
-      return next;
-    });
     setCommentText('');
-
-    const remoteSaved = await insertLoveLetterCommentRemote(
-      openedLetter.id,
-      cleanName,
-      cleanText
-    );
-
-    if (remoteSaved) {
-      setComments((prev) => {
-        const next = prev.map((item) =>
-          item.id === tempId
-            ? {
-                ...remoteSaved,
-                likes: Math.max(remoteSaved.likes, item.likes),
-                reactions: { ...item.reactions, ...remoteSaved.reactions },
-              }
-            : item
-        );
-        writeCachedComments(openedLetter.id, next);
-        return next;
-      });
-    }
-
+    await enqueueAndPublish(ev);
     setSubmittingComment(false);
   };
 
@@ -991,18 +1058,21 @@ export const LoveLetterView: React.FC<LoveLetterViewProps> = ({
     if (!openedLetter) return;
     soundFX.playHeartBurst();
 
-    let nextLikesVal = 1;
-    setComments((prev) => {
-      const next = prev.map((item) => {
-        if (item.id !== commentId) return item;
-        nextLikesVal = item.likes + 1;
-        return { ...item, likes: nextLikesVal };
-      });
-      writeCachedComments(openedLetter.id, next);
-      return next;
-    });
+    const actorName =
+      commentName.trim() ||
+      (currentUser === 'faiz' ? profile.faizName : profile.kenatName);
 
-    void incrementLoveCommentLikeRemote(commentId, nextLikesVal);
+    const ev: LoveSyncEvent = {
+      v: 1,
+      scope: 'love_letter',
+      kind: 'like',
+      letterId: openedLetter.id,
+      commentId,
+      actionId: makeLoveSyncId('lllike'),
+      actor: actorName,
+      createdAt: new Date().toISOString(),
+    };
+    void enqueueAndPublish(ev);
   };
 
   // React di SURAT: bisa banyak react, klik emoji sama nambah jumlah
@@ -1015,28 +1085,17 @@ export const LoveLetterView: React.FC<LoveLetterViewProps> = ({
       commentName.trim() ||
       (currentUser === 'faiz' ? profile.faizName : profile.kenatName);
 
-    let nextCount = 1;
-    setLetterReactions((prev) => {
-      nextCount = (prev[emoji] ?? 0) + 1;
-      const next = { ...prev, [emoji]: nextCount };
-      const commentMap: Record<string, Record<string, number>> = {};
-      for (const c of comments) {
-        if (Object.keys(c.reactions).length > 0) {
-          commentMap[c.id] = c.reactions;
-        }
-      }
-      writeCachedReactions(openedLetter.id, next, commentMap);
-      return next;
-    });
-
-    void saveLoveLetterReactionRemote({
+    const ev: LoveSyncEvent = {
+      v: 1,
+      scope: 'love_letter',
+      kind: 'letter_react',
       letterId: openedLetter.id,
-      commentId: null,
       emoji,
-      nextCount,
-      userName: actorName,
-      replaceExistingCommentReaction: false,
-    });
+      actionId: makeLoveSyncId('lllrx'),
+      actor: actorName,
+      createdAt: new Date().toISOString(),
+    };
+    void enqueueAndPublish(ev);
   };
 
   // React di KOMEN: hanya bisa 1 react saja; klik emoji sama -> jumlah nambah; pilih emoji lain -> ganti reactnya
@@ -1049,54 +1108,18 @@ export const LoveLetterView: React.FC<LoveLetterViewProps> = ({
       commentName.trim() ||
       (currentUser === 'faiz' ? profile.faizName : profile.kenatName);
 
-    let nextCount = 1;
-    let isReplacingDifferentEmoji = false;
-
-    setComments((prev) => {
-      const next = prev.map((item) => {
-        if (item.id !== commentId) return item;
-        const existingEntries = Object.entries(item.reactions).filter(
-          ([, c]) => c > 0
-        );
-        const alreadyHasSameEmoji = (item.reactions[emoji] ?? 0) > 0;
-
-        if (alreadyHasSameEmoji) {
-          nextCount = (item.reactions[emoji] ?? 0) + 1;
-          return {
-            ...item,
-            reactions: { [emoji]: nextCount },
-          };
-        }
-
-        if (existingEntries.length > 0) {
-          isReplacingDifferentEmoji = true;
-        }
-        nextCount = 1;
-        return {
-          ...item,
-          reactions: { [emoji]: 1 },
-        };
-      });
-
-      writeCachedComments(openedLetter.id, next);
-      const commentMap: Record<string, Record<string, number>> = {};
-      for (const c of next) {
-        if (Object.keys(c.reactions).length > 0) {
-          commentMap[c.id] = c.reactions;
-        }
-      }
-      writeCachedReactions(openedLetter.id, letterReactions, commentMap);
-      return next;
-    });
-
-    void saveLoveLetterReactionRemote({
+    const ev: LoveSyncEvent = {
+      v: 1,
+      scope: 'love_letter',
+      kind: 'comment_react',
       letterId: openedLetter.id,
       commentId,
       emoji,
-      nextCount,
-      userName: actorName,
-      replaceExistingCommentReaction: isReplacingDifferentEmoji,
-    });
+      actionId: makeLoveSyncId('llcrx'),
+      actor: actorName,
+      createdAt: new Date().toISOString(),
+    };
+    void enqueueAndPublish(ev);
   };
 
   // ================= VIEW 2: SURAT TERBUKA =================

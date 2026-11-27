@@ -1,6 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Heart, Send, Smile, Sparkles } from 'lucide-react';
-import { getSupabaseClient } from '../supabaseClient';
+import {
+  type KeizSyncEventPayload,
+  fetchKeizSyncEvents,
+  getSupabaseClient,
+  publishKeizSyncEvent,
+  subscribeKeizSyncEvents,
+} from '../supabaseClient';
 import { soundFX } from '../sound';
 import type { CoupleProfile, Role } from '../types';
 import { AppleEmoji, AppleTextWithEmojis } from './AppleEmoji';
@@ -392,6 +398,364 @@ function writeCachedLetterReactions(
   }
 }
 
+const RESCUED_SYNC_IDS_KEY = 'keiz_rescued_sync_ids_v1';
+
+type MensiveSyncEvent = Extract<KeizSyncEventPayload, { scope: 'mensive' }>;
+
+function makeSyncId(prefix: string): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return `${prefix}-${crypto.randomUUID()}`;
+  }
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function getSyncEventKey(ev: MensiveSyncEvent): string {
+  return ev.kind === 'comment' ? `comment:${ev.commentId}` : `act:${ev.actionId}`;
+}
+
+let legacyMensiveCommentsTableMissing = false;
+let legacyMensiveReactionsTableMissing = false;
+
+function readRescuedSyncSet(): Set<string> {
+  try {
+    const raw = localStorage.getItem(RESCUED_SYNC_IDS_KEY);
+    if (!raw) return new Set();
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? new Set(arr.map(String)) : new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+function writeRescuedSyncSet(set: Set<string>): void {
+  try {
+    localStorage.setItem(RESCUED_SYNC_IDS_KEY, JSON.stringify(Array.from(set).slice(-300)));
+  } catch {
+    // ignore
+  }
+}
+
+export async function rescueTrappedLocalFeedback(
+  currentUser: Role,
+  monthsCount: number
+): Promise<void> {
+  const sb = getSupabaseClient();
+  if (!sb) return;
+
+  const rescued = readRescuedSyncSet();
+  let changedRescued = false;
+
+  // 1. Rescue Mensive Pop-Up comments (both local-* and unconfirmed mig-*)
+  try {
+    const cachedComments = readCachedComments();
+    const candidates = cachedComments.filter(
+      (c) =>
+        (c.id.startsWith('local-') || c.id.startsWith('mig-')) &&
+        !rescued.has(`mensive_ok:${c.id}`)
+    );
+    if (candidates.length > 0) {
+      const existingEvents = await fetchKeizSyncEvents<MensiveSyncEvent>('mensive');
+      const existingKeys = new Set(existingEvents.map(getSyncEventKey));
+
+      const updatedCache: MensiveCommentItem[] = [];
+      for (const c of cachedComments) {
+        if (
+          (!c.id.startsWith('local-') && !c.id.startsWith('mig-')) ||
+          rescued.has(`mensive_ok:${c.id}`)
+        ) {
+          updatedCache.push(c);
+          continue;
+        }
+        const migratedId = c.id.startsWith('mig-') ? c.id : `mig-${c.id}`;
+        const rawBaseId = c.id.startsWith('mig-') ? c.id.slice(4) : c.id;
+
+        let commentSynced = existingKeys.has(`comment:${migratedId}`);
+        if (!commentSynced) {
+          commentSynced = await publishKeizSyncEvent(currentUser, {
+            v: 1,
+            scope: 'mensive',
+            kind: 'comment',
+            monthsCount,
+            commentId: migratedId,
+            name: c.name,
+            text: c.text,
+            createdAt: c.createdAt || new Date().toISOString(),
+          });
+        }
+
+        if (!commentSynced) {
+          // Keep original ID so next retry will pick it up again
+          updatedCache.push(c);
+          continue;
+        }
+
+        let allActionsOk = true;
+        const likeCount = Math.min(Math.max(0, c.likes || 0), 50);
+        for (let i = 0; i < likeCount; i++) {
+          const actionId = `mig-like-${rawBaseId}-${i}`;
+          if (!existingKeys.has(`act:${actionId}`)) {
+            const ok = await publishKeizSyncEvent(currentUser, {
+              v: 1,
+              scope: 'mensive',
+              kind: 'like',
+              monthsCount,
+              commentId: migratedId,
+              actionId,
+              actor: c.name,
+              createdAt: c.createdAt || new Date().toISOString(),
+            });
+            if (!ok) allActionsOk = false;
+          }
+        }
+        for (const [emoji, cnt] of Object.entries(c.reactions || {})) {
+          const safeCnt = Math.min(Math.max(0, Number(cnt) || 0), 30);
+          for (let i = 0; i < safeCnt; i++) {
+            const actionId = `mig-crx-${rawBaseId}-${emoji}-${i}`;
+            if (!existingKeys.has(`act:${actionId}`)) {
+              const ok = await publishKeizSyncEvent(currentUser, {
+                v: 1,
+                scope: 'mensive',
+                kind: 'comment_react',
+                monthsCount,
+                commentId: migratedId,
+                emoji,
+                actionId,
+                actor: c.name,
+                createdAt: c.createdAt || new Date().toISOString(),
+              });
+              if (!ok) allActionsOk = false;
+            }
+          }
+        }
+
+        if (allActionsOk) {
+          rescued.add(`mensive_ok:${migratedId}`);
+          rescued.add(`mensive_ok:${c.id}`);
+          changedRescued = true;
+        }
+        updatedCache.push({ ...c, id: migratedId });
+      }
+      writeCachedComments(updatedCache);
+    }
+
+    // Rescue Mensive letter reactions cached only locally
+    const letterRxKey = `mensive_letter_rx_ok_${currentUser}_${monthsCount}`;
+    const cachedLetterRx = readCachedLetterReactions(monthsCount);
+    if (
+      Object.keys(cachedLetterRx).length > 0 &&
+      !rescued.has(letterRxKey)
+    ) {
+      const existingEvents = await fetchKeizSyncEvents<MensiveSyncEvent>('mensive');
+      const hasAnyRemoteLetterRx = existingEvents.some(
+        (ev) => ev.kind === 'letter_react' && ev.monthsCount === monthsCount
+      );
+      if (hasAnyRemoteLetterRx) {
+        rescued.add(letterRxKey);
+        changedRescued = true;
+      } else {
+        const existingKeys = new Set(existingEvents.map(getSyncEventKey));
+        let allOk = true;
+        for (const [emoji, cnt] of Object.entries(cachedLetterRx)) {
+          const safeCnt = Math.min(Math.max(0, Number(cnt) || 0), 30);
+          for (let i = 0; i < safeCnt; i++) {
+            const actionId = `mig-mlrx-${monthsCount}-${currentUser}-${emoji}-${i}`;
+            if (!existingKeys.has(`act:${actionId}`)) {
+              const ok = await publishKeizSyncEvent(currentUser, {
+                v: 1,
+                scope: 'mensive',
+                kind: 'letter_react',
+                monthsCount,
+                emoji,
+                actionId,
+                actor: currentUser === 'faiz' ? 'Faiz' : 'Kenat',
+                createdAt: new Date().toISOString(),
+              });
+              if (!ok) allOk = false;
+            }
+          }
+        }
+        if (allOk) {
+          rescued.add(letterRxKey);
+          changedRescued = true;
+        }
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  // 2. Rescue Love Letter comments & reactions (both local-* and unconfirmed mig-*)
+  try {
+    const commentPrefix = 'keiz_love_letter_comments_v1_';
+    const rxPrefix = 'keiz_love_letter_reactions_v1_';
+    const letterIds = new Set<string>();
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (!k) continue;
+      if (k.startsWith(commentPrefix)) letterIds.add(k.slice(commentPrefix.length));
+      if (k.startsWith(rxPrefix)) letterIds.add(k.slice(rxPrefix.length));
+    }
+
+    if (letterIds.size > 0) {
+      type LoveEvent = Extract<KeizSyncEventPayload, { scope: 'love_letter' }>;
+      const existingLoveEvents = await fetchKeizSyncEvents<LoveEvent>('love_letter');
+      const existingLoveKeys = new Set(
+        existingLoveEvents.map((ev) =>
+          ev.kind === 'comment' ? `comment:${ev.commentId}` : `act:${ev.actionId}`
+        )
+      );
+
+      for (const letterId of letterIds) {
+        const rawComments = localStorage.getItem(`${commentPrefix}${letterId}`);
+        if (rawComments) {
+          const parsed = JSON.parse(rawComments);
+          if (Array.isArray(parsed)) {
+            let modified = false;
+            const nextList = [];
+            for (const item of parsed) {
+              const c = item as {
+                id?: string;
+                name?: string;
+                text?: string;
+                createdAt?: string;
+                likes?: number;
+                reactions?: Record<string, number>;
+              };
+              if (
+                c &&
+                typeof c.id === 'string' &&
+                (c.id.startsWith('local-') || c.id.startsWith('mig-')) &&
+                !rescued.has(`ll_ok:${letterId}:${c.id}`)
+              ) {
+                const migratedId = c.id.startsWith('mig-') ? c.id : `mig-${c.id}`;
+                const rawBaseId = c.id.startsWith('mig-') ? c.id.slice(4) : c.id;
+
+                let commentSynced = existingLoveKeys.has(`comment:${migratedId}`);
+                if (!commentSynced) {
+                  commentSynced = await publishKeizSyncEvent(currentUser, {
+                    v: 1,
+                    scope: 'love_letter',
+                    kind: 'comment',
+                    letterId,
+                    commentId: migratedId,
+                    name: c.name || 'Sayang',
+                    text: c.text || '',
+                    createdAt: c.createdAt || new Date().toISOString(),
+                  });
+                }
+
+                if (!commentSynced) {
+                  nextList.push(item);
+                  continue;
+                }
+
+                let allActionsOk = true;
+                const likeCount = Math.min(Math.max(0, c.likes || 0), 50);
+                for (let li = 0; li < likeCount; li++) {
+                  const actionId = `mig-ll-like-${rawBaseId}-${li}`;
+                  if (!existingLoveKeys.has(`act:${actionId}`)) {
+                    const ok = await publishKeizSyncEvent(currentUser, {
+                      v: 1,
+                      scope: 'love_letter',
+                      kind: 'like',
+                      letterId,
+                      commentId: migratedId,
+                      actionId,
+                      actor: c.name || 'Sayang',
+                      createdAt: c.createdAt || new Date().toISOString(),
+                    });
+                    if (!ok) allActionsOk = false;
+                  }
+                }
+                for (const [emoji, cnt] of Object.entries(c.reactions || {})) {
+                  const safeCnt = Math.min(Math.max(0, Number(cnt) || 0), 30);
+                  for (let ri = 0; ri < safeCnt; ri++) {
+                    const actionId = `mig-ll-crx-${rawBaseId}-${emoji}-${ri}`;
+                    if (!existingLoveKeys.has(`act:${actionId}`)) {
+                      const ok = await publishKeizSyncEvent(currentUser, {
+                        v: 1,
+                        scope: 'love_letter',
+                        kind: 'comment_react',
+                        letterId,
+                        commentId: migratedId,
+                        emoji,
+                        actionId,
+                        actor: c.name || 'Sayang',
+                        createdAt: c.createdAt || new Date().toISOString(),
+                      });
+                      if (!ok) allActionsOk = false;
+                    }
+                  }
+                }
+
+                if (allActionsOk) {
+                  rescued.add(`ll_ok:${letterId}:${migratedId}`);
+                  rescued.add(`ll_ok:${letterId}:${c.id}`);
+                  changedRescued = true;
+                }
+                if (migratedId !== c.id) modified = true;
+                nextList.push({ ...c, id: migratedId });
+              } else {
+                nextList.push(item);
+              }
+            }
+            if (modified) {
+              localStorage.setItem(`${commentPrefix}${letterId}`, JSON.stringify(nextList));
+            }
+          }
+        }
+
+        const rawRx = localStorage.getItem(`${rxPrefix}${letterId}`);
+        const rxRescueKey = `ll_letter_rx_ok_${currentUser}_${letterId}`;
+        if (rawRx && !rescued.has(rxRescueKey)) {
+          const parsedRx = JSON.parse(rawRx) as {
+            letterReactions?: Record<string, number>;
+          };
+          const lrx = parsedRx?.letterReactions || {};
+          const hasAnyRemoteLrx = existingLoveEvents.some(
+            (ev) => ev.kind === 'letter_react' && ev.letterId === letterId
+          );
+          if (hasAnyRemoteLrx) {
+            rescued.add(rxRescueKey);
+            changedRescued = true;
+          } else if (Object.keys(lrx).length > 0) {
+            let allOk = true;
+            for (const [emoji, cnt] of Object.entries(lrx)) {
+              const safeCnt = Math.min(Math.max(0, Number(cnt) || 0), 30);
+              for (let ri = 0; ri < safeCnt; ri++) {
+                const actionId = `mig-llrx-${letterId}-${currentUser}-${emoji}-${ri}`;
+                if (!existingLoveKeys.has(`act:${actionId}`)) {
+                  const ok = await publishKeizSyncEvent(currentUser, {
+                    v: 1,
+                    scope: 'love_letter',
+                    kind: 'letter_react',
+                    letterId,
+                    emoji,
+                    actionId,
+                    actor: currentUser === 'faiz' ? 'Faiz' : 'Kenat',
+                    createdAt: new Date().toISOString(),
+                  });
+                  if (!ok) allOk = false;
+                }
+              }
+            }
+            if (allOk) {
+              rescued.add(rxRescueKey);
+              changedRescued = true;
+            }
+          }
+        }
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  if (changedRescued) {
+    writeRescuedSyncSet(rescued);
+  }
+}
+
 function normalizeCommentRow(
   row: Record<string, unknown>,
   reactionMap: Record<string, Record<string, number>>
@@ -405,15 +769,22 @@ function normalizeCommentRow(
       'sender',
       'user_name',
       'username',
+      'user',
+      'pengirim',
+      'dari',
+      'from',
     ]) || 'Sayang';
   const text = pickFirstString(row, [
     'comment',
     'komentar',
+    'komen',
     'content',
     'message',
     'isi',
     'text',
     'body',
+    'pesan',
+    'ucapan',
   ]);
   if (!id || !text) return null;
 
@@ -433,233 +804,174 @@ function normalizeCommentRow(
   };
 }
 
-async function loadMensiveCommentsAndReactions(
-  monthsCount: number
-): Promise<{
+function foldMensiveEvents(params: {
+  events: MensiveSyncEvent[];
+  monthsCount: number;
+  legacyComments: MensiveCommentItem[];
+  legacyLetterReactions: Record<string, number>;
+}): {
+  comments: MensiveCommentItem[];
+  letterReactions: Record<string, number>;
+} {
+  const { events, monthsCount, legacyComments, legacyLetterReactions } = params;
+  const seenKeys = new Set<string>();
+  const commentMap = new Map<string, MensiveCommentItem>();
+
+  for (const lc of legacyComments) {
+    commentMap.set(lc.id, {
+      ...lc,
+      reactions: { ...(lc.reactions || {}) },
+    });
+  }
+
+  const letterReactions: Record<string, number> = { ...legacyLetterReactions };
+
+  const ordered = [...events].sort(
+    (a, b) =>
+      new Date(a.createdAt || 0).getTime() -
+      new Date(b.createdAt || 0).getTime()
+  );
+
+  for (const ev of ordered) {
+    const key = getSyncEventKey(ev);
+    if (seenKeys.has(key)) continue;
+    seenKeys.add(key);
+
+    if (ev.kind === 'comment') {
+      if (!commentMap.has(ev.commentId)) {
+        commentMap.set(ev.commentId, {
+          id: ev.commentId,
+          name: ev.name || 'Sayang',
+          text: ev.text,
+          createdAt: ev.createdAt || new Date().toISOString(),
+          likes: 0,
+          reactions: {},
+        });
+      }
+    } else if (ev.kind === 'like') {
+      const target = commentMap.get(ev.commentId);
+      if (target) {
+        target.likes += 1;
+      }
+    } else if (ev.kind === 'comment_react') {
+      const target = commentMap.get(ev.commentId);
+      if (target && ev.emoji) {
+        target.reactions[ev.emoji] = (target.reactions[ev.emoji] ?? 0) + 1;
+      }
+    } else if (ev.kind === 'letter_react') {
+      if (ev.emoji && (ev.monthsCount === monthsCount || ev.monthsCount === undefined)) {
+        letterReactions[ev.emoji] = (letterReactions[ev.emoji] ?? 0) + 1;
+      }
+    }
+  }
+
+  const comments = Array.from(commentMap.values()).sort(
+    (a, b) =>
+      new Date(a.createdAt || 0).getTime() -
+      new Date(b.createdAt || 0).getTime()
+  );
+
+  return { comments, letterReactions };
+}
+
+async function fetchLegacyMensiveData(monthsCount: number): Promise<{
   comments: MensiveCommentItem[];
   letterReactions: Record<string, number>;
 }> {
-  const cachedComments = readCachedComments();
-  const cachedReactions = readCachedReactions();
-  const cachedLetterReactions = readCachedLetterReactions(monthsCount);
-  const letterTargetId = getLetterReactionTargetId(monthsCount);
   const sb = getSupabaseClient();
+  if (!sb) return { comments: [], letterReactions: {} };
 
-  if (!sb) {
-    return {
-      comments: cachedComments.map((c) => ({
-        ...c,
-        reactions: c.reactions || cachedReactions[c.id] || {},
-      })),
-      letterReactions: cachedLetterReactions,
-    };
-  }
-
+  const letterTargetId = getLetterReactionTargetId(monthsCount);
   const reactionMap: Record<string, Record<string, number>> = {};
-  let reactionsLoaded = false;
+  const directLetterReactions: Record<string, number> = {};
 
-  try {
-    const { data, error } = await sb
-      .from('mensive_reactions')
-      .select('*')
-      .limit(500);
-    if (!error && Array.isArray(data)) {
-      reactionsLoaded = true;
-      for (const item of data) {
-        const row = item as Record<string, unknown>;
-        const commentId = String(
-          row.comment_id ?? row.mensive_comment_id ?? ''
-        ).trim();
-        const emoji = pickFirstString(row, ['emoji', 'reaction', 'emot']);
-        if (!commentId || !emoji) continue;
-        if (!reactionMap[commentId]) reactionMap[commentId] = {};
-        const explicitCount =
-          typeof row.count === 'number'
-            ? row.count
-            : typeof row.jumlah === 'number'
-            ? row.jumlah
-            : typeof row.total === 'number'
-            ? row.total
-            : null;
-        if (explicitCount !== null && explicitCount > 0) {
-          reactionMap[commentId][emoji] =
-            (reactionMap[commentId][emoji] ?? 0) + explicitCount;
-        } else {
-          reactionMap[commentId][emoji] =
-            (reactionMap[commentId][emoji] ?? 0) + 1;
+  if (!legacyMensiveReactionsTableMissing) {
+    try {
+      const { data, error } = await sb
+        .from('mensive_reactions')
+        .select('*')
+        .limit(500);
+      if (error) {
+        if (error.code === '42P01' || error.code === 'PGRST205') {
+          legacyMensiveReactionsTableMissing = true;
+        }
+      } else if (Array.isArray(data)) {
+        for (const item of data) {
+          const row = item as Record<string, unknown>;
+          const rawCid =
+            row.comment_id ?? row.mensive_comment_id ?? row.target_id;
+          const commentId =
+            rawCid !== null && rawCid !== undefined
+              ? String(rawCid).trim()
+              : '';
+          const emoji = pickFirstString(row, [
+            'emoji',
+            'reaction',
+            'emot',
+            'emoticon',
+          ]);
+          if (!emoji) continue;
+
+          const explicitCount =
+            typeof row.count === 'number'
+              ? row.count
+              : typeof row.jumlah === 'number'
+              ? row.jumlah
+              : typeof row.total === 'number'
+              ? row.total
+              : null;
+          const inc =
+            explicitCount !== null && explicitCount > 0 ? explicitCount : 1;
+
+          if (
+            !commentId ||
+            commentId === letterTargetId ||
+            commentId === 'letter' ||
+            commentId === 'surat'
+          ) {
+            directLetterReactions[emoji] =
+              (directLetterReactions[emoji] ?? 0) + inc;
+          } else {
+            if (!reactionMap[commentId]) reactionMap[commentId] = {};
+            reactionMap[commentId][emoji] =
+              (reactionMap[commentId][emoji] ?? 0) + inc;
+          }
         }
       }
+    } catch {
+      legacyMensiveReactionsTableMissing = true;
     }
-  } catch {
-    // Fallback ke cache lokal jika tabel mensive_reactions belum ada
   }
 
-  const resolvedLetterReactions =
-    reactionsLoaded && reactionMap[letterTargetId]
-      ? reactionMap[letterTargetId]
-      : cachedLetterReactions;
-  if (reactionsLoaded && reactionMap[letterTargetId]) {
-    writeCachedLetterReactions(monthsCount, reactionMap[letterTargetId]);
-  }
-
-  let commentRows: Record<string, unknown>[] | null = null;
-  try {
-    const res1 = await sb
-      .from('mensive_comments')
-      .select('*')
-      .order('created_at', { ascending: true })
-      .limit(200);
-    if (!res1.error && Array.isArray(res1.data)) {
-      commentRows = res1.data as Record<string, unknown>[];
-    } else {
-      const res2 = await sb.from('mensive_comments').select('*').limit(200);
-      if (!res2.error && Array.isArray(res2.data)) {
-        commentRows = res2.data as Record<string, unknown>[];
-      }
-    }
-  } catch {
-    // Fallback ke cache lokal jika tabel mensive_comments belum ada
-  }
-
-  if (commentRows) {
-    const effectiveReactions = reactionsLoaded ? reactionMap : cachedReactions;
-    const normalized: MensiveCommentItem[] = [];
-    for (const r of commentRows) {
-      const item = normalizeCommentRow(r, effectiveReactions);
-      if (item) normalized.push(item);
-    }
-    writeCachedComments(normalized);
-    if (reactionsLoaded) {
-      writeCachedReactions(reactionMap);
-    }
-    return {
-      comments: normalized,
-      letterReactions: resolvedLetterReactions,
-    };
-  }
-
-  return {
-    comments: cachedComments.map((c) => ({
-      ...c,
-      reactions:
-        (reactionsLoaded ? reactionMap[c.id] : undefined) ||
-        c.reactions ||
-        cachedReactions[c.id] ||
-        {},
-    })),
-    letterReactions: resolvedLetterReactions,
-  };
-}
-
-async function insertMensiveCommentRemote(
-  name: string,
-  text: string,
-  monthsCount: number
-): Promise<MensiveCommentItem | null> {
-  const sb = getSupabaseClient();
-  if (!sb) return null;
-
-  const payloads: Record<string, unknown>[] = [
-    { name, comment: text, likes: 0, month: monthsCount },
-    { name, comment: text, likes: 0 },
-    { name, comment: text },
-    { nama: name, komentar: text, likes: 0 },
-    { nama: name, komentar: text },
-    { author: name, content: text, likes: 0 },
-    { author: name, message: text },
-    { nama: name, isi: text },
-  ];
-
-  for (const payload of payloads) {
+  const comments: MensiveCommentItem[] = [];
+  if (!legacyMensiveCommentsTableMissing) {
     try {
       const { data, error } = await sb
         .from('mensive_comments')
-        .insert(payload)
         .select('*')
-        .single();
-      if (!error && data) {
-        const normalized = normalizeCommentRow(
-          data as Record<string, unknown>,
-          {}
-        );
-        if (normalized) return normalized;
+        .limit(200);
+      if (error) {
+        if (error.code === '42P01' || error.code === 'PGRST205') {
+          legacyMensiveCommentsTableMissing = true;
+        }
+      } else if (Array.isArray(data)) {
+        for (const r of data) {
+          const item = normalizeCommentRow(
+            r as Record<string, unknown>,
+            reactionMap
+          );
+          if (item) comments.push(item);
+        }
       }
     } catch {
-      // Coba varian kolom berikutnya
-    }
-  }
-  return null;
-}
-
-async function incrementCommentLikeRemote(
-  commentId: string,
-  nextLikes: number
-): Promise<void> {
-  const sb = getSupabaseClient();
-  if (!sb || commentId.startsWith('local-')) return;
-
-  const payloads: Record<string, unknown>[] = [
-    { likes: nextLikes },
-    { likes_count: nextLikes },
-    { like_count: nextLikes },
-  ];
-
-  for (const payload of payloads) {
-    try {
-      const { error } = await sb
-        .from('mensive_comments')
-        .update(payload)
-        .eq('id', commentId);
-      if (!error) return;
-    } catch {
-      // Coba nama kolom berikutnya
-    }
-  }
-}
-
-async function saveCommentReactionRemote(
-  commentId: string,
-  emoji: string,
-  nextCount: number,
-  userName: string
-): Promise<void> {
-  const sb = getSupabaseClient();
-  if (!sb || commentId.startsWith('local-')) return;
-
-  const payloads: Record<string, unknown>[] = [
-    { comment_id: commentId, emoji, user_name: userName },
-    { comment_id: commentId, emoji },
-    { mensive_comment_id: commentId, emoji },
-    { comment_id: commentId, reaction: emoji },
-  ];
-
-  for (const payload of payloads) {
-    try {
-      const { error } = await sb.from('mensive_reactions').insert(payload);
-      if (!error) return;
-    } catch {
-      // Coba varian berikutnya atau update count jika unique constraint
+      legacyMensiveCommentsTableMissing = true;
     }
   }
 
-  // Fallback jika tabel memakai unique (comment_id, emoji) dengan kolom count
-  const countPayloads: Record<string, unknown>[] = [
-    { count: nextCount },
-    { jumlah: nextCount },
-    { total: nextCount },
-  ];
-  for (const cp of countPayloads) {
-    try {
-      const { error } = await sb
-        .from('mensive_reactions')
-        .update(cp)
-        .eq('comment_id', commentId)
-        .eq('emoji', emoji);
-      if (!error) return;
-    } catch {
-      // Abaikan jika tidak cocok
-    }
-  }
+  return {
+    comments,
+    letterReactions: directLetterReactions,
+  };
 }
 
 interface MensivePopupModalProps {
@@ -700,6 +1012,43 @@ export const MensivePopupModal: React.FC<MensivePopupModalProps> = ({
   const [commentError, setCommentError] = useState('');
   const [openPickerForId, setOpenPickerForId] = useState<string | null>(null);
   const pickerContainerRef = useRef<HTMLDivElement | null>(null);
+  const pendingEventsRef = useRef<MensiveSyncEvent[]>([]);
+  const remoteEventsRef = useRef<MensiveSyncEvent[]>([]);
+  const legacySnapshotRef = useRef<{
+    comments: MensiveCommentItem[];
+    letterReactions: Record<string, number>;
+  }>({ comments: [], letterReactions: {} });
+
+  const recomputeFromEvents = useCallback(
+    (persistCache = true) => {
+      const merged = [
+        ...remoteEventsRef.current,
+        ...pendingEventsRef.current,
+      ];
+      const folded = foldMensiveEvents({
+        events: merged,
+        monthsCount,
+        legacyComments: legacySnapshotRef.current.comments,
+        legacyLetterReactions: legacySnapshotRef.current.letterReactions,
+      });
+
+      setComments(folded.comments);
+      setLetterReactions(folded.letterReactions);
+
+      if (persistCache) {
+        writeCachedComments(folded.comments);
+        writeCachedLetterReactions(monthsCount, folded.letterReactions);
+        const rMap: Record<string, Record<string, number>> = {};
+        for (const c of folded.comments) {
+          if (Object.keys(c.reactions).length > 0) {
+            rMap[c.id] = c.reactions;
+          }
+        }
+        writeCachedReactions(rMap);
+      }
+    },
+    [monthsCount]
+  );
 
   useEffect(() => {
     setImgKenatErr(false);
@@ -710,40 +1059,90 @@ export const MensivePopupModal: React.FC<MensivePopupModalProps> = ({
   }, [faizPhoto]);
 
   const refreshComments = useCallback(async () => {
-    const res = await loadMensiveCommentsAndReactions(monthsCount);
-    setComments(res.comments);
-    setLetterReactions(res.letterReactions);
-  }, [monthsCount]);
+    const sb = getSupabaseClient();
+    if (!sb) {
+      const cachedComments = readCachedComments();
+      const cachedReactions = readCachedReactions();
+      setComments(
+        cachedComments.map((c) => ({
+          ...c,
+          reactions: c.reactions || cachedReactions[c.id] || {},
+        }))
+      );
+      setLetterReactions(readCachedLetterReactions(monthsCount));
+      return;
+    }
+
+    const [remoteEvents, legacy] = await Promise.all([
+      fetchKeizSyncEvents<MensiveSyncEvent>('mensive'),
+      fetchLegacyMensiveData(monthsCount),
+    ]);
+
+    const remoteKeys = new Set(remoteEvents.map(getSyncEventKey));
+    pendingEventsRef.current = pendingEventsRef.current.filter(
+      (ev) => !remoteKeys.has(getSyncEventKey(ev))
+    );
+    remoteEventsRef.current = remoteEvents;
+    legacySnapshotRef.current = legacy;
+    recomputeFromEvents(true);
+  }, [monthsCount, recomputeFromEvents]);
 
   useEffect(() => {
     if (!open) return;
-    void refreshComments();
 
-    const sb = getSupabaseClient();
-    if (!sb) return;
+    // Tampilkan cache lokal lebih dulu agar cepat, lalu sinkronkan dari Supabase
+    const cachedComments = readCachedComments();
+    const cachedReactions = readCachedReactions();
+    if (cachedComments.length > 0) {
+      setComments(
+        cachedComments.map((c) => ({
+          ...c,
+          reactions: c.reactions || cachedReactions[c.id] || {},
+        }))
+      );
+    }
+    const cachedLrx = readCachedLetterReactions(monthsCount);
+    if (Object.keys(cachedLrx).length > 0) {
+      setLetterReactions(cachedLrx);
+    }
 
-    const channel = sb
-      .channel(`mensive_comments_live_${Date.now()}`)
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'mensive_comments' },
-        () => {
-          void refreshComments();
+    void rescueTrappedLocalFeedback(currentUser, monthsCount).then(() => {
+      void refreshComments();
+    });
+
+    const unsubSync = subscribeKeizSyncEvents('mensive', (incoming) => {
+      if (incoming && incoming.scope === 'mensive') {
+        const key = getSyncEventKey(incoming);
+        const alreadyHave =
+          remoteEventsRef.current.some((e) => getSyncEventKey(e) === key) ||
+          pendingEventsRef.current.some((e) => getSyncEventKey(e) === key);
+        if (!alreadyHave) {
+          remoteEventsRef.current = [...remoteEventsRef.current, incoming];
+          recomputeFromEvents(true);
         }
-      )
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'mensive_reactions' },
-        () => {
-          void refreshComments();
-        }
-      )
-      .subscribe();
+      }
+      void refreshComments();
+    });
+
+    const pollTimer = window.setInterval(() => {
+      void refreshComments();
+    }, 3000);
+
+    const handleWake = () => {
+      if (document.visibilityState === 'visible') {
+        void refreshComments();
+      }
+    };
+    window.addEventListener('focus', handleWake);
+    document.addEventListener('visibilitychange', handleWake);
 
     return () => {
-      void sb.removeChannel(channel);
+      unsubSync();
+      window.clearInterval(pollTimer);
+      window.removeEventListener('focus', handleWake);
+      document.removeEventListener('visibilitychange', handleWake);
     };
-  }, [open, refreshComments]);
+  }, [open, currentUser, monthsCount, refreshComments, recomputeFromEvents]);
 
   useEffect(() => {
     if (!openPickerForId) return;
@@ -790,6 +1189,23 @@ export const MensivePopupModal: React.FC<MensivePopupModalProps> = ({
     faizName
   );
 
+  const enqueueAndPublish = async (ev: MensiveSyncEvent) => {
+    pendingEventsRef.current = [...pendingEventsRef.current, ev];
+    recomputeFromEvents(true);
+    const ok = await publishKeizSyncEvent(currentUser, ev);
+    if (!ok) {
+      window.setTimeout(() => {
+        const key = getSyncEventKey(ev);
+        if (pendingEventsRef.current.some((p) => getSyncEventKey(p) === key)) {
+          void publishKeizSyncEvent(currentUser, ev).then(() => {
+            void refreshComments();
+          });
+        }
+      }, 2000);
+    }
+    void refreshComments();
+  };
+
   const handleSendComment = async (e: React.FormEvent) => {
     e.preventDefault();
     const cleanName = commentName.trim();
@@ -809,119 +1225,76 @@ export const MensivePopupModal: React.FC<MensivePopupModalProps> = ({
     setSubmittingComment(true);
     soundFX.playPop();
 
-    const tempId = `local-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-    const optimisticItem: MensiveCommentItem = {
-      id: tempId,
+    const ev: MensiveSyncEvent = {
+      v: 1,
+      scope: 'mensive',
+      kind: 'comment',
+      monthsCount,
+      commentId: makeSyncId('mc'),
       name: cleanName,
       text: cleanText,
       createdAt: new Date().toISOString(),
-      likes: 0,
-      reactions: {},
     };
 
-    setComments((prev) => {
-      const next = [...prev, optimisticItem];
-      writeCachedComments(next);
-      return next;
-    });
     setCommentText('');
-
-    const remoteSaved = await insertMensiveCommentRemote(
-      cleanName,
-      cleanText,
-      monthsCount
-    );
-
-    if (remoteSaved) {
-      setComments((prev) => {
-        const next = prev.map((item) =>
-          item.id === tempId
-            ? {
-                ...remoteSaved,
-                likes: Math.max(remoteSaved.likes, item.likes),
-                reactions: { ...item.reactions, ...remoteSaved.reactions },
-              }
-            : item
-        );
-        writeCachedComments(next);
-        return next;
-      });
-    }
-
+    await enqueueAndPublish(ev);
     setSubmittingComment(false);
   };
 
   const handleLikeComment = (commentId: string) => {
     soundFX.playHeartBurst();
-    let nextLikesVal = 1;
-    setComments((prev) => {
-      const next = prev.map((item) => {
-        if (item.id !== commentId) return item;
-        nextLikesVal = item.likes + 1;
-        return { ...item, likes: nextLikesVal };
-      });
-      writeCachedComments(next);
-      return next;
-    });
-    void incrementCommentLikeRemote(commentId, nextLikesVal);
+    const actorName =
+      commentName.trim() || (currentUser === 'faiz' ? faizName : kenatName);
+    const ev: MensiveSyncEvent = {
+      v: 1,
+      scope: 'mensive',
+      kind: 'like',
+      monthsCount,
+      commentId,
+      actionId: makeSyncId('mlike'),
+      actor: actorName,
+      createdAt: new Date().toISOString(),
+    };
+    void enqueueAndPublish(ev);
   };
 
   const handleSelectReaction = (commentId: string, emoji: string) => {
     soundFX.playPop();
     setOpenPickerForId(null);
 
-    let nextEmojiCount = 1;
     const actorName =
       commentName.trim() || (currentUser === 'faiz' ? faizName : kenatName);
-
-    setComments((prev) => {
-      const next = prev.map((item) => {
-        if (item.id !== commentId) return item;
-        const currentCount = item.reactions[emoji] ?? 0;
-        nextEmojiCount = currentCount + 1;
-        const updatedReactions = {
-          ...item.reactions,
-          [emoji]: nextEmojiCount,
-        };
-        return { ...item, reactions: updatedReactions };
-      });
-      writeCachedComments(next);
-
-      const reactionMap: Record<string, Record<string, number>> = {};
-      for (const c of next) {
-        if (Object.keys(c.reactions).length > 0) {
-          reactionMap[c.id] = c.reactions;
-        }
-      }
-      writeCachedReactions(reactionMap);
-      return next;
-    });
-
-    void saveCommentReactionRemote(commentId, emoji, nextEmojiCount, actorName);
+    const ev: MensiveSyncEvent = {
+      v: 1,
+      scope: 'mensive',
+      kind: 'comment_react',
+      monthsCount,
+      commentId,
+      emoji,
+      actionId: makeSyncId('mcrx'),
+      actor: actorName,
+      createdAt: new Date().toISOString(),
+    };
+    void enqueueAndPublish(ev);
   };
 
   const handleSelectLetterReaction = (emoji: string) => {
     soundFX.playPop();
     setOpenPickerForId(null);
 
-    let nextEmojiCount = 1;
     const actorName =
       commentName.trim() || (currentUser === 'faiz' ? faizName : kenatName);
-    const letterTargetId = getLetterReactionTargetId(monthsCount);
-
-    setLetterReactions((prev) => {
-      nextEmojiCount = (prev[emoji] ?? 0) + 1;
-      const updated = { ...prev, [emoji]: nextEmojiCount };
-      writeCachedLetterReactions(monthsCount, updated);
-      return updated;
-    });
-
-    void saveCommentReactionRemote(
-      letterTargetId,
+    const ev: MensiveSyncEvent = {
+      v: 1,
+      scope: 'mensive',
+      kind: 'letter_react',
+      monthsCount,
       emoji,
-      nextEmojiCount,
-      actorName
-    );
+      actionId: makeSyncId('mlrx'),
+      actor: actorName,
+      createdAt: new Date().toISOString(),
+    };
+    void enqueueAndPublish(ev);
   };
 
   const letterReactionEntries = Object.entries(letterReactions).filter(

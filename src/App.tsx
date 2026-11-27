@@ -35,6 +35,7 @@ import {
   MensivePopupModal,
   computeMensiveMetrics,
   fetchMensiveRemoteData,
+  rescueTrappedLocalFeedback,
   type MensiveFetchedData,
 } from './components/MensivePopupModal';
 import { NobarView } from './components/NobarView';
@@ -859,6 +860,11 @@ export default function App() {
     mensiveData?.coupleStart ?? DEFAULT_COUPLE_START,
     mensiveTargetDate
   );
+
+  useEffect(() => {
+    if (!supabaseReady || !currentUser) return;
+    void rescueTrappedLocalFeedback(currentUser, mensiveMetrics.monthsCount);
+  }, [supabaseReady, currentUser, mensiveMetrics.monthsCount]);
 
   const showMensivePopup = Boolean(
     supabaseReady &&

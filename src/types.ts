@@ -75,7 +75,9 @@ export type ChatMessageType =
   | 'music_link'
   | 'nobar_chat'
   | 'wallpaper_chat'
-  | 'wallpaper_nobar';
+  | 'wallpaper_nobar'
+  | 'mensive_sync'
+  | 'love_letter_sync';
 
 export interface ChatMessage {
   id: string;
