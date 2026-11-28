@@ -35,6 +35,17 @@ import {
   ReactionPill,
   toggleUserReaction,
 } from './ChatReactions';
+import {
+  clampDiceValue,
+  DiceFaceSvg,
+  nextSpinDiceFace,
+  rollFairDiceValue,
+} from './GameDice';
+import {
+  loadSavedMonopoliRoom,
+  MonopoliCouplePage,
+  type MonopoliSavedRoom,
+} from './MonopoliCoupleView';
 import type {
   ChatMessage,
   CoupleProfile,
@@ -352,106 +363,6 @@ const UT_ROOM_STORAGE_KEY = 'keiz_ular_tangga_active_room_v1';
 const UT_REACT_MARKER = '__KEIZ_REACT__';
 const UT_DELETED_MARKER = '__KEIZ_DELETED__';
 const UT_REPLY_PREFIX = '__KEIZ_REPLY__';
-
-function clampDiceValue(val: unknown): number {
-  const n = Math.round(Number(val));
-  if (!Number.isFinite(n) || n < 1) return 1;
-  if (n > 6) return 6;
-  return n;
-}
-
-function rollFairDiceValue(): number {
-  try {
-    if (typeof window !== 'undefined' && window.crypto?.getRandomValues) {
-      const buf = new Uint8Array(1);
-      while (true) {
-        window.crypto.getRandomValues(buf);
-        if (buf[0] < 252) {
-          return (buf[0] % 6) + 1;
-        }
-      }
-    }
-  } catch {
-    // fallback below
-  }
-  return Math.floor(Math.random() * 6) + 1;
-}
-
-function nextSpinDiceFace(prev: number): number {
-  const candidate = rollFairDiceValue();
-  return candidate === prev ? ((candidate % 6) + 1) : candidate;
-}
-
-const DICE_PIP_COORDS: Record<number, ReadonlyArray<[number, number]>> = {
-  1: [[50, 50]],
-  2: [
-    [30, 30],
-    [70, 70],
-  ],
-  3: [
-    [30, 30],
-    [50, 50],
-    [70, 70],
-  ],
-  4: [
-    [30, 30],
-    [70, 30],
-    [30, 70],
-    [70, 70],
-  ],
-  5: [
-    [30, 30],
-    [70, 30],
-    [50, 50],
-    [30, 70],
-    [70, 70],
-  ],
-  6: [
-    [30, 26],
-    [70, 26],
-    [30, 50],
-    [70, 50],
-    [30, 74],
-    [70, 74],
-  ],
-};
-
-const DiceFaceSvg: React.FC<{ value: number; muted?: boolean }> = ({
-  value,
-  muted = false,
-}) => {
-  const safeVal = clampDiceValue(value);
-  const pips = DICE_PIP_COORDS[safeVal] || DICE_PIP_COORDS[1];
-  const pipColor = muted ? '#94A3B8' : safeVal === 1 ? '#FF2E7E' : '#2D0A1E';
-
-  return (
-    <svg
-      viewBox="0 0 100 100"
-      className="h-10 w-10 drop-shadow-xs"
-      aria-hidden="true"
-    >
-      <rect
-        x="6"
-        y="6"
-        width="88"
-        height="88"
-        rx="22"
-        fill={muted ? '#F8FAFC' : '#FFFFFF'}
-        stroke={muted ? '#CBD5E1' : '#FFD6E7'}
-        strokeWidth="5"
-      />
-      {pips.map(([cx, cy], idx) => (
-        <circle
-          key={idx}
-          cx={cx}
-          cy={cy}
-          r={safeVal === 1 ? 12 : 9.5}
-          fill={pipColor}
-        />
-      ))}
-    </svg>
-  );
-};
 
 function generateRoomCode(): string {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
@@ -862,16 +773,22 @@ export const GameView: React.FC<GameViewProps> = ({
   const partnerOnlineInRoom =
     partnerInGame || roomMembers.includes(partnerRole);
 
-  // Page visibility inside Game ('menu' | 'ular-tangga' | 'ludo-king')
+  // Page visibility inside Game ('menu' | 'ular-tangga' | 'ludo-king' | 'monopoli-couple')
   const [savedRoomMeta, setSavedRoomMeta] = useState<SavedActiveRoom | null>(() =>
     loadSavedActiveRoom()
   );
   const [savedLudoMeta, setSavedLudoMeta] = useState<SavedActiveRoom | null>(() =>
     loadSavedLudoRoom()
   );
-  const [activeGamePage, setActiveGamePage] = useState<'menu' | 'ular-tangga' | 'ludo-king'>(() => {
+  const [savedMonopoliMeta, setSavedMonopoliMeta] = useState<MonopoliSavedRoom | null>(() =>
+    loadSavedMonopoliRoom()
+  );
+  const [activeGamePage, setActiveGamePage] = useState<
+    'menu' | 'ular-tangga' | 'ludo-king' | 'monopoli-couple'
+  >(() => {
     if (loadSavedActiveRoom()) return 'ular-tangga';
     if (loadSavedLudoRoom()) return 'ludo-king';
+    if (loadSavedMonopoliRoom()) return 'monopoli-couple';
     return 'menu';
   });
 
@@ -1120,6 +1037,11 @@ export const GameView: React.FC<GameViewProps> = ({
   const showLudoKingPage = () => {
     soundFX.playClick();
     setActiveGamePage('ludo-king');
+  };
+
+  const showMonopoliCouplePage = () => {
+    soundFX.playClick();
+    setActiveGamePage('monopoli-couple');
   };
 
   const loadChats = useCallback(async (roomId: string) => {
@@ -2400,6 +2322,19 @@ export const GameView: React.FC<GameViewProps> = ({
     );
   }
 
+  // ---------- RENDER: #page-monopoli-couple ----------
+  if (activeGamePage === 'monopoli-couple') {
+    return (
+      <MonopoliCouplePage
+        currentUser={currentUser}
+        resolvedProfile={resolvedProfile}
+        onHeartBurstAt={onHeartBurstAt}
+        onSavedRoomChange={setSavedMonopoliMeta}
+        onBackToMenu={() => setActiveGamePage('menu')}
+      />
+    );
+  }
+
   // ---------- RENDER: GAME MENU CARDS (DEFAULT VIEW WHEN OPENING GAME) ----------
   if (activeGamePage === 'menu') {
     return (
@@ -2640,6 +2575,117 @@ export const GameView: React.FC<GameViewProps> = ({
                 onClick={(e) => {
                   e.stopPropagation();
                   showLudoKingPage();
+                }}
+                className="btn-bucin flex h-[32px] w-full shrink-0 items-center justify-center gap-1 rounded-[10px] bg-gradient-to-r from-[#FF2E7E] to-[#FF62A4] px-3 text-[12px] font-extrabold text-white shadow-sm cursor-pointer"
+              >
+                <AppleTextWithEmojis text="▶️ Main" emojiSize={12} />
+              </button>
+            </div>
+          </div>
+
+          {/* Kartu Game Monopoli Couple (Grid 2 Kolom, ukuran & gaya 100% sama persis <= 200px) */}
+          <div
+            role="button"
+            tabIndex={0}
+            onClick={showMonopoliCouplePage}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                showMonopoliCouplePage();
+              }
+            }}
+            className="menu-card-bucin flex max-h-[200px] flex-col overflow-hidden rounded-[18px] border border-[#FFD6E7] bg-white text-left shadow-[0_8px_20px_rgba(255,46,126,0.12)] cursor-pointer"
+          >
+            {/* Cover Gambar 94px (Gradient pink ke ungu + papan Monopoli mini + 🎲🏠) */}
+            <div className="relative h-[94px] w-full shrink-0 overflow-hidden bg-gradient-to-br from-[#FF7AB8] via-[#F472B6] to-[#A855F7] px-2 py-1.5">
+              <div className="pointer-events-none absolute -left-4 -top-4 h-14 w-14 rounded-full bg-white/20" />
+              <div className="pointer-events-none absolute -bottom-5 -right-4 h-16 w-16 rounded-full bg-white/15" />
+
+              {/* Badge pojok kanan atas: 2 Pemain / AKTIF */}
+              <span className="absolute right-1.5 top-1.5 z-20 rounded-full bg-[#FF2E7E] px-2 py-0.5 text-[10px] font-extrabold leading-none text-white shadow-sm ring-1 ring-white/80">
+                {savedMonopoliMeta ? 'AKTIF' : '2 Pemain'}
+              </span>
+
+              <div className="relative z-10 flex h-full w-full items-center justify-center gap-1.5">
+                <div className="flex h-6 w-6 -rotate-12 items-center justify-center rounded-lg bg-white/90 shadow-sm">
+                  <AppleEmoji emoji="🎲" size={14} />
+                </div>
+
+                {/* Papan Monopoli Mini 4x4 Melingkar */}
+                <div className="relative grid h-[74px] w-[74px] shrink-0 grid-cols-4 grid-rows-4 overflow-hidden rounded-xl border border-white/95 bg-white shadow-md">
+                  {/* Baris atas */}
+                  <div className="flex items-center justify-center border-[0.5px] border-[#FFD6E7] bg-[#DCFCE7]">
+                    <AppleEmoji emoji="🚩" size={8} />
+                  </div>
+                  <div className="flex flex-col border-[0.5px] border-[#FFD6E7] bg-white">
+                    <span className="h-1.5 w-full bg-[#FF2E7E]" />
+                  </div>
+                  <div className="flex flex-col border-[0.5px] border-[#FFD6E7] bg-white">
+                    <span className="h-1.5 w-full bg-[#EC4899]" />
+                  </div>
+                  <div className="flex items-center justify-center border-[0.5px] border-[#FFD6E7] bg-[#FEF3C7]">
+                    <AppleEmoji emoji="🔒" size={8} />
+                  </div>
+
+                  {/* Baris 2 (kiri + tengah 2x2 + kanan) */}
+                  <div className="flex border-[0.5px] border-[#FFD6E7] bg-white">
+                    <span className="h-full w-1.5 bg-[#A855F7]" />
+                  </div>
+                  <div className="col-span-2 row-span-2 flex flex-col items-center justify-center bg-[#FFF0F6]">
+                    <AppleEmoji emoji="🏠" size={13} />
+                    <span className="mt-0.5 text-[5.5px] font-extrabold leading-none text-[#FF2E7E]">
+                      KEIZ
+                    </span>
+                  </div>
+                  <div className="flex justify-end border-[0.5px] border-[#FFD6E7] bg-white">
+                    <span className="h-full w-1.5 bg-[#3B82F6]" />
+                  </div>
+
+                  {/* Baris 3 (kiri + kanan) */}
+                  <div className="flex items-center justify-center border-[0.5px] border-[#FFD6E7] bg-[#FFF5F9]">
+                    <AppleEmoji emoji="💌" size={8} />
+                  </div>
+                  <div className="flex items-center justify-center border-[0.5px] border-[#FFD6E7] bg-[#FEF9C3]">
+                    <AppleEmoji emoji="🎁" size={8} />
+                  </div>
+
+                  {/* Baris bawah */}
+                  <div className="flex items-center justify-center border-[0.5px] border-[#FFD6E7] bg-[#FCE7F3]">
+                    <AppleEmoji emoji="💑" size={8} />
+                  </div>
+                  <div className="flex flex-col justify-end border-[0.5px] border-[#FFD6E7] bg-white">
+                    <span className="h-1.5 w-full bg-[#10B981]" />
+                  </div>
+                  <div className="flex flex-col justify-end border-[0.5px] border-[#FFD6E7] bg-white">
+                    <span className="h-1.5 w-full bg-[#F59E0B]" />
+                  </div>
+                  <div className="flex items-center justify-center border-[0.5px] border-[#FFD6E7] bg-[#FFE4E6]">
+                    <AppleEmoji emoji="💘" size={8} />
+                  </div>
+                </div>
+
+                <div className="flex h-6 w-6 rotate-12 items-center justify-center rounded-lg bg-white/90 shadow-sm">
+                  <AppleEmoji emoji="🏠" size={14} />
+                </div>
+              </div>
+            </div>
+
+            {/* Di bawah cover: padding 10px, 14px title, 11px subtitle, 32px tombol */}
+            <div className="flex flex-1 flex-col justify-between gap-1.5 p-[10px]">
+              <div className="min-w-0">
+                <h2 className="font-display flex items-center gap-1 truncate text-[14px] font-extrabold leading-tight text-[#2D0A1E]">
+                  <span>Monopoli Couple</span>
+                </h2>
+                <p className="mt-0.5 truncate text-[11px] font-semibold leading-tight text-[#8A6A7A]">
+                  main berdua
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  showMonopoliCouplePage();
                 }}
                 className="btn-bucin flex h-[32px] w-full shrink-0 items-center justify-center gap-1 rounded-[10px] bg-gradient-to-r from-[#FF2E7E] to-[#FF62A4] px-3 text-[12px] font-extrabold text-white shadow-sm cursor-pointer"
               >

@@ -130,6 +130,50 @@ create table if not exists public.lagu_keiz (
   created_at timestamptz default now()
 );
 
+-- 11. Tabel Game Multiplayer (Ular Tangga, Ludo King, Monopoli Couple)
+-- Catatan: Tidak membuat tabel user baru; profil & avatar diambil dari tabel profiles / users_keiz yang sudah ada.
+create table if not exists public.game_rooms (
+  id uuid primary key default gen_random_uuid(),
+  room_code text unique not null,
+  status text not null default 'waiting' check (status in ('waiting', 'playing', 'finished')),
+  current_turn text not null default 'player1' check (current_turn in ('player1', 'player2')),
+  winner text,
+  created_at timestamptz default now()
+);
+
+create table if not exists public.game_players (
+  id uuid primary key default gen_random_uuid(),
+  room_id uuid not null references public.game_rooms(id) on delete cascade,
+  player_slot text not null check (player_slot in ('player1', 'player2')),
+  name text not null,
+  avatar_emoji text not null default 'faiz',
+  position int not null default 1,
+  is_ready boolean not null default false,
+  created_at timestamptz default now(),
+  unique (room_id, player_slot)
+);
+
+create table if not exists public.game_moves (
+  id uuid primary key default gen_random_uuid(),
+  room_id uuid not null references public.game_rooms(id) on delete cascade,
+  player_slot text not null check (player_slot in ('player1', 'player2')),
+  dice_value int not null,
+  from_pos int not null,
+  to_pos int not null,
+  event_type text not null default 'normal',
+  created_at timestamptz default now()
+);
+
+create table if not exists public.game_chats (
+  id uuid primary key default gen_random_uuid(),
+  room_id uuid not null references public.game_rooms(id) on delete cascade,
+  player_slot text not null check (player_slot in ('player1', 'player2', 'system')),
+  sender_name text not null,
+  sender_emoji text not null default 'faiz',
+  message text not null,
+  created_at timestamptz default now()
+);
+
 -- ============================================================
 -- ENABLE RLS + POLICY ALLOW ALL (RUANG PRIVAT FAIZ & KENAT)
 -- ============================================================
@@ -143,6 +187,10 @@ alter table public.call_keiz enable row level security;
 alter table public.postingan_keiz enable row level security;
 alter table public.unek_unek_keiz enable row level security;
 alter table public.lagu_keiz enable row level security;
+alter table public.game_rooms enable row level security;
+alter table public.game_players enable row level security;
+alter table public.game_moves enable row level security;
+alter table public.game_chats enable row level security;
 
 drop policy if exists "allow_all_users_keiz" on public.users_keiz;
 create policy "allow_all_users_keiz" on public.users_keiz for all using (true) with check (true);
@@ -173,6 +221,79 @@ create policy "allow_all_unek_unek_keiz" on public.unek_unek_keiz for all using 
 
 drop policy if exists "allow_all_lagu_keiz" on public.lagu_keiz;
 create policy "allow_all_lagu_keiz" on public.lagu_keiz for all using (true) with check (true);
+
+-- RLS khusus room 2 pemain (hanya pemain di room terkait yang bisa akses game & chat)
+drop policy if exists "game_rooms_2player_access" on public.game_rooms;
+create policy "game_rooms_2player_access" on public.game_rooms
+for all
+using (
+  status = 'waiting'
+  or exists (
+    select 1 from public.game_players gp
+    where gp.room_id = game_rooms.id
+      and gp.player_slot in ('player1', 'player2')
+  )
+)
+with check (
+  status in ('waiting', 'playing', 'finished')
+);
+
+drop policy if exists "game_players_2player_access" on public.game_players;
+create policy "game_players_2player_access" on public.game_players
+for all
+using (
+  player_slot in ('player1', 'player2')
+  and exists (
+    select 1 from public.game_rooms gr
+    where gr.id = game_players.room_id
+  )
+)
+with check (
+  player_slot in ('player1', 'player2')
+  and (
+    select count(*) from public.game_players gp
+    where gp.room_id = game_players.room_id
+  ) <= 2
+);
+
+drop policy if exists "game_moves_room_only" on public.game_moves;
+create policy "game_moves_room_only" on public.game_moves
+for all
+using (
+  exists (
+    select 1 from public.game_players gp
+    where gp.room_id = game_moves.room_id
+      and gp.player_slot in ('player1', 'player2')
+  )
+)
+with check (
+  exists (
+    select 1 from public.game_players gp
+    where gp.room_id = game_moves.room_id
+      and gp.player_slot = game_moves.player_slot
+  )
+);
+
+drop policy if exists "game_chats_room_only" on public.game_chats;
+create policy "game_chats_room_only" on public.game_chats
+for all
+using (
+  exists (
+    select 1 from public.game_players gp
+    where gp.room_id = game_chats.room_id
+      and gp.player_slot in ('player1', 'player2')
+  )
+)
+with check (
+  exists (
+    select 1 from public.game_players gp
+    where gp.room_id = game_chats.room_id
+      and (
+        gp.player_slot = game_chats.player_slot
+        or game_chats.player_slot = 'system'
+      )
+  )
+);
 
 -- Storage Bucket 'keiz-album'
 insert into storage.buckets (id, name, public)
@@ -217,7 +338,11 @@ begin
     'call_keiz',
     'postingan_keiz',
     'unek_unek_keiz',
-    'lagu_keiz'
+    'lagu_keiz',
+    'game_rooms',
+    'game_players',
+    'game_moves',
+    'game_chats'
   ]
   loop
     begin
