@@ -352,7 +352,106 @@ const UT_ROOM_STORAGE_KEY = 'keiz_ular_tangga_active_room_v1';
 const UT_REACT_MARKER = '__KEIZ_REACT__';
 const UT_DELETED_MARKER = '__KEIZ_DELETED__';
 const UT_REPLY_PREFIX = '__KEIZ_REPLY__';
-const UT_DICE_FACES = ['⚀', '⚁', '⚂', '⚃', '⚄', '⚅'];
+
+function clampDiceValue(val: unknown): number {
+  const n = Math.round(Number(val));
+  if (!Number.isFinite(n) || n < 1) return 1;
+  if (n > 6) return 6;
+  return n;
+}
+
+function rollFairDiceValue(): number {
+  try {
+    if (typeof window !== 'undefined' && window.crypto?.getRandomValues) {
+      const buf = new Uint8Array(1);
+      while (true) {
+        window.crypto.getRandomValues(buf);
+        if (buf[0] < 252) {
+          return (buf[0] % 6) + 1;
+        }
+      }
+    }
+  } catch {
+    // fallback below
+  }
+  return Math.floor(Math.random() * 6) + 1;
+}
+
+function nextSpinDiceFace(prev: number): number {
+  const candidate = rollFairDiceValue();
+  return candidate === prev ? ((candidate % 6) + 1) : candidate;
+}
+
+const DICE_PIP_COORDS: Record<number, ReadonlyArray<[number, number]>> = {
+  1: [[50, 50]],
+  2: [
+    [30, 30],
+    [70, 70],
+  ],
+  3: [
+    [30, 30],
+    [50, 50],
+    [70, 70],
+  ],
+  4: [
+    [30, 30],
+    [70, 30],
+    [30, 70],
+    [70, 70],
+  ],
+  5: [
+    [30, 30],
+    [70, 30],
+    [50, 50],
+    [30, 70],
+    [70, 70],
+  ],
+  6: [
+    [30, 26],
+    [70, 26],
+    [30, 50],
+    [70, 50],
+    [30, 74],
+    [70, 74],
+  ],
+};
+
+const DiceFaceSvg: React.FC<{ value: number; muted?: boolean }> = ({
+  value,
+  muted = false,
+}) => {
+  const safeVal = clampDiceValue(value);
+  const pips = DICE_PIP_COORDS[safeVal] || DICE_PIP_COORDS[1];
+  const pipColor = muted ? '#94A3B8' : safeVal === 1 ? '#FF2E7E' : '#2D0A1E';
+
+  return (
+    <svg
+      viewBox="0 0 100 100"
+      className="h-10 w-10 drop-shadow-xs"
+      aria-hidden="true"
+    >
+      <rect
+        x="6"
+        y="6"
+        width="88"
+        height="88"
+        rx="22"
+        fill={muted ? '#F8FAFC' : '#FFFFFF'}
+        stroke={muted ? '#CBD5E1' : '#FFD6E7'}
+        strokeWidth="5"
+      />
+      {pips.map(([cx, cy], idx) => (
+        <circle
+          key={idx}
+          cx={cx}
+          cy={cy}
+          r={safeVal === 1 ? 12 : 9.5}
+          fill={pipColor}
+        />
+      ))}
+    </svg>
+  );
+};
 
 function generateRoomCode(): string {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
@@ -838,6 +937,7 @@ export const GameView: React.FC<GameViewProps> = ({
   const playersRef = useRef<UlarTanggaPlayer[]>(players);
   const isAnimatingMoveRef = useRef<boolean>(isAnimatingMove);
   const isRollingRef = useRef<boolean>(isRolling);
+  const rollLockRef = useRef<boolean>(false);
   const setupChanRef = useRef<ReturnType<NonNullable<ReturnType<typeof getSupabaseClient>>['channel']> | null>(null);
   const roomBroadcastChanRef = useRef<ReturnType<NonNullable<ReturnType<typeof getSupabaseClient>>['channel']> | null>(null);
   const seenChatIdsRef = useRef<Set<string>>(new Set());
@@ -1123,6 +1223,9 @@ export const GameView: React.FC<GameViewProps> = ({
 
       if (!movesRes.error && Array.isArray(movesRes.data)) {
         const mList = movesRes.data as UlarTanggaMove[];
+        if (!isRollingRef.current && mList[0]?.dice_value) {
+          setDiceDisplay(clampDiceValue(mList[0].dice_value));
+        }
         setMoves((prev) => {
           if (prev.length === mList.length && prev[0]?.id === mList[0]?.id) {
             return prev;
@@ -1224,6 +1327,10 @@ export const GameView: React.FC<GameViewProps> = ({
             if (!mv) return;
             const slot: PlayerSlot =
               mv.player_slot === 'player2' ? 'player2' : 'player1';
+            const diceVal = clampDiceValue(mv.dice_value);
+            if (!isRollingRef.current) {
+              setDiceDisplay(diceVal);
+            }
             setMoves((prev) => {
               if (mv.id && prev.some((m) => m.id === mv.id)) return prev;
               return [mv, ...prev].slice(0, 30);
@@ -1232,7 +1339,7 @@ export const GameView: React.FC<GameViewProps> = ({
               slot,
               Number(mv.from_position),
               Number(mv.to_position),
-              Number(mv.dice_value),
+              diceVal,
               String(mv.event_type || 'normal')
             );
           }
@@ -1559,6 +1666,7 @@ export const GameView: React.FC<GameViewProps> = ({
     setVisualPositions({ player1: 1, player2: 1 });
     setBonusSixBanner(false);
     setBoardToast(null);
+    setDiceDisplay(1);
     setIsRolling(false);
     setIsAnimatingMove(false);
 
@@ -1576,7 +1684,7 @@ export const GameView: React.FC<GameViewProps> = ({
 
   const resolveLocalRoll = useCallback(
     (fromPos: number) => {
-      const dice = Math.floor(Math.random() * 6) + 1;
+      const dice = rollFairDiceValue();
       const rawTarget = fromPos + dice;
       if (rawTarget > 100) {
         return { dice, from: fromPos, to: fromPos, event: 'overshoot' };
@@ -1658,25 +1766,32 @@ export const GameView: React.FC<GameViewProps> = ({
       await sleep(650);
       if (cancelled || roomRef.current?.id !== BOT_ROOM_ID) return;
 
+      const botPlayer = playersRef.current.find((p) => p.player_slot === 'player2');
+      const fromPos = botPlayer?.position ?? 1;
+      const res = resolveLocalRoll(fromPos);
+
+      let spinStopped = false;
       setIsRolling(true);
       setBonusSixBanner(false);
       const spinTimer = window.setInterval(() => {
-        setDiceDisplay(Math.floor(Math.random() * 6) + 1);
-      }, 125);
+        if (!spinStopped && !cancelled) {
+          setDiceDisplay((prev) => nextSpinDiceFace(prev));
+        }
+      }, 115);
 
-      await sleep(950);
+      await sleep(900);
+      spinStopped = true;
       window.clearInterval(spinTimer);
       if (cancelled || roomRef.current?.id !== BOT_ROOM_ID) {
         setIsRolling(false);
         return;
       }
+
       setIsRolling(false);
-
-      const botPlayer = playersRef.current.find((p) => p.player_slot === 'player2');
-      const fromPos = botPlayer?.position ?? 1;
-      const res = resolveLocalRoll(fromPos);
-
       setDiceDisplay(res.dice);
+      await sleep(360);
+      if (cancelled || roomRef.current?.id !== BOT_ROOM_ID) return;
+
       setPlayers((prev) =>
         prev.map((p) =>
           p.player_slot === 'player2' ? { ...p, position: res.to } : p
@@ -1731,6 +1846,7 @@ export const GameView: React.FC<GameViewProps> = ({
     setVisualPositions({ player1: 1, player2: 1 });
     setBonusSixBanner(false);
     setBoardToast(null);
+    setDiceDisplay(1);
 
     if (room.id === BOT_ROOM_ID) {
       setPlayers((prev) => prev.map((p) => ({ ...p, position: 1 })));
@@ -1787,111 +1903,131 @@ export const GameView: React.FC<GameViewProps> = ({
   };
 
   const rollDice = async () => {
-    if (!room || !mySlot || isRolling || isAnimatingMove) return;
+    if (!room || !mySlot || isRolling || isAnimatingMove || rollLockRef.current) return;
     if (room.status !== 'playing' || room.current_turn !== mySlot) return;
 
-    // Bot solo testing mode
-    if (room.id === BOT_ROOM_ID) {
+    rollLockRef.current = true;
+    const sleep = (ms: number) =>
+      new Promise<void>((res) => window.setTimeout(res, ms));
+
+    try {
+      // Bot solo testing mode
+      if (room.id === BOT_ROOM_ID) {
+        const curMe = playersRef.current.find((p) => p.player_slot === 'player1');
+        const fromPos = curMe?.position ?? visualPositions.player1;
+        const res = resolveLocalRoll(fromPos);
+
+        let spinStopped = false;
+        soundFX.playClick();
+        setIsRolling(true);
+        setBonusSixBanner(false);
+
+        const spinTimer = window.setInterval(() => {
+          if (!spinStopped) {
+            setDiceDisplay((prev) => nextSpinDiceFace(prev));
+          }
+        }, 115);
+
+        await sleep(920);
+        spinStopped = true;
+        window.clearInterval(spinTimer);
+        setIsRolling(false);
+        setDiceDisplay(res.dice);
+
+        await sleep(380);
+
+        setPlayers((prev) =>
+          prev.map((p) =>
+            p.player_slot === 'player1' ? { ...p, position: res.to } : p
+          )
+        );
+        setMoves((prev) => [
+          {
+            id: `p1-mv-${Date.now()}`,
+            room_id: BOT_ROOM_ID,
+            player_slot: 'player1',
+            dice_value: res.dice,
+            from_position: res.from,
+            to_position: res.to,
+            event_type: res.event,
+            created_at: new Date().toISOString(),
+          },
+          ...prev,
+        ]);
+
+        await animatePieceMove('player1', res.from, res.to, res.dice, res.event);
+
+        if (res.to >= 100) {
+          setRoom((prev) =>
+            prev ? { ...prev, status: 'finished', winner: 'player1' } : prev
+          );
+          return;
+        }
+
+        if (res.dice === 6) {
+          setBonusSixBanner(true);
+          soundFX.playPop();
+          return;
+        }
+
+        setRoom((prev) => (prev ? { ...prev, current_turn: 'player2' } : prev));
+        return;
+      }
+
+      const sb = getSupabaseClient();
+      if (!sb) return;
+
+      let spinStopped = false;
       soundFX.playClick();
       setIsRolling(true);
       setBonusSixBanner(false);
 
       const spinTimer = window.setInterval(() => {
-        setDiceDisplay(Math.floor(Math.random() * 6) + 1);
-      }, 125);
+        if (!spinStopped) {
+          setDiceDisplay((prev) => nextSpinDiceFace(prev));
+        }
+      }, 115);
 
-      await new Promise<void>((res) => window.setTimeout(res, 1000));
+      const minDelay = sleep(920);
+      const rpcCall = sb.rpc('roll_dice', {
+        p_room_id: room.id,
+        p_player_slot: mySlot,
+      });
+
+      const [, rpcResult] = await Promise.all([minDelay, rpcCall]);
+      spinStopped = true;
       window.clearInterval(spinTimer);
       setIsRolling(false);
 
-      const curMe = playersRef.current.find((p) => p.player_slot === 'player1');
-      const fromPos = curMe?.position ?? visualPositions.player1;
-      const res = resolveLocalRoll(fromPos);
-
-      setDiceDisplay(res.dice);
-      setPlayers((prev) =>
-        prev.map((p) =>
-          p.player_slot === 'player1' ? { ...p, position: res.to } : p
-        )
-      );
-      setMoves((prev) => [
-        {
-          id: `p1-mv-${Date.now()}`,
-          room_id: BOT_ROOM_ID,
-          player_slot: 'player1',
-          dice_value: res.dice,
-          from_position: res.from,
-          to_position: res.to,
-          event_type: res.event,
-          created_at: new Date().toISOString(),
-        },
-        ...prev,
-      ]);
-
-      await animatePieceMove('player1', res.from, res.to, res.dice, res.event);
-
-      if (res.to >= 100) {
-        setRoom((prev) =>
-          prev ? { ...prev, status: 'finished', winner: 'player1' } : prev
-        );
+      if (rpcResult.error) {
+        showBoardToast(rpcResult.error.message || 'Gagal lempar dadu!', 2200);
         return;
       }
 
-      if (res.dice === 6) {
-        setBonusSixBanner(true);
-        soundFX.playPop();
-        return;
+      const raw = Array.isArray(rpcResult.data)
+        ? (rpcResult.data[0] as Record<string, unknown> | undefined)
+        : (rpcResult.data as Record<string, unknown> | null | undefined);
+
+      if (raw) {
+        const dice = clampDiceValue(raw.dice ?? raw.dice_value ?? 1);
+        const from = Number(raw.from ?? raw.from_position ?? 1);
+        const to = Number(raw.to ?? raw.to_position ?? from);
+        const evType = String(raw.event ?? raw.event_type ?? 'normal');
+
+        setDiceDisplay(dice);
+        await sleep(380);
+
+        if (dice === 6 && to < 100) {
+          setBonusSixBanner(true);
+          soundFX.playPop();
+        }
+        await animatePieceMove(mySlot, from, to, dice, evType);
       }
 
-      setRoom((prev) => (prev ? { ...prev, current_turn: 'player2' } : prev));
-      return;
+      await fetchFullRoomSnapshot(room.id);
+    } finally {
+      rollLockRef.current = false;
     }
-
-    const sb = getSupabaseClient();
-    if (!sb) return;
-
-    soundFX.playClick();
-    setIsRolling(true);
-    setBonusSixBanner(false);
-
-    const spinTimer = window.setInterval(() => {
-      setDiceDisplay(Math.floor(Math.random() * 6) + 1);
-    }, 125);
-
-    const minDelay = new Promise<void>((res) => window.setTimeout(res, 1000));
-    const rpcCall = sb.rpc('roll_dice', {
-      p_room_id: room.id,
-      p_player_slot: mySlot,
-    });
-
-    const [, rpcResult] = await Promise.all([minDelay, rpcCall]);
-    window.clearInterval(spinTimer);
-    setIsRolling(false);
-
-    if (rpcResult.error) {
-      showBoardToast(rpcResult.error.message || 'Gagal lempar dadu!', 2200);
-      return;
-    }
-
-    const raw = Array.isArray(rpcResult.data)
-      ? (rpcResult.data[0] as Record<string, unknown> | undefined)
-      : (rpcResult.data as Record<string, unknown> | null | undefined);
-
-    if (raw) {
-      const dice = Number(raw.dice ?? raw.dice_value ?? 1);
-      const from = Number(raw.from ?? raw.from_position ?? 1);
-      const to = Number(raw.to ?? raw.to_position ?? from);
-      const evType = String(raw.event ?? raw.event_type ?? 'normal');
-
-      setDiceDisplay(Math.max(1, Math.min(6, dice)));
-      if (dice === 6 && to < 100) {
-        setBonusSixBanner(true);
-        soundFX.playPop();
-      }
-      await animatePieceMove(mySlot, from, to, dice, evType);
-    }
-
-    await fetchFullRoomSnapshot(room.id);
   };
 
   // ---------- CHAT HANDLERS (WORK IN SETUP, LOBBY, BOT, & PLAYING) ----------
@@ -2859,10 +2995,11 @@ export const GameView: React.FC<GameViewProps> = ({
                   : ''
               }`}
             >
-              <span className="text-[36px] leading-none">
-                {UT_DICE_FACES[Math.max(0, Math.min(5, diceDisplay - 1))]}
-              </span>
-              <span className="mt-1 text-[10px] font-extrabold">
+              <DiceFaceSvg
+                value={diceDisplay}
+                muted={!isMyTurn && !isRolling && isAnimatingMove === false}
+              />
+              <span className="mt-1.5 text-[11px] font-extrabold tracking-wide">
                 {isRolling ? '...' : `Dadu ${diceDisplay}`}
               </span>
             </button>
@@ -3912,7 +4049,7 @@ const LudoKingPage: React.FC<LudoKingPageProps> = ({
 
   const [isRolling, setIsRolling] = useState(false);
   const [isAnimatingMove, setIsAnimatingMove] = useState(false);
-  const [diceDisplay, setDiceDisplay] = useState<number>(6);
+  const [diceDisplay, setDiceDisplay] = useState<number>(1);
   const [pendingDice, setPendingDice] = useState<number | null>(null);
   const [selectablePieces, setSelectablePieces] = useState<number[]>([]);
   const [boardToast, setBoardToast] = useState<string | null>(null);
@@ -3938,6 +4075,7 @@ const LudoKingPage: React.FC<LudoKingPageProps> = ({
   const stateVersionRef = useRef<number>(stateVersion);
   const isAnimatingRef = useRef<boolean>(isAnimatingMove);
   const isRollingRef = useRef<boolean>(isRolling);
+  const rollLockRef = useRef<boolean>(false);
   const animCancelRef = useRef<boolean>(false);
   const lastAnimVersionRef = useRef<number>(-1);
   const boardToastTimerRef = useRef<number | null>(null);
@@ -4073,10 +4211,12 @@ const LudoKingPage: React.FC<LudoKingPageProps> = ({
     if (!remote) return;
     if (remote.version > stateVersionRef.current) {
       const isInitialHydrate = stateVersionRef.current === 0 && remote.version > 1;
+      stateVersionRef.current = remote.version;
+      piecesRef.current = remote.pieces;
       setStateVersion(remote.version);
       setLudoPieces(remote.pieces);
-      if (remote.lastDice) {
-        setDiceDisplay(remote.lastDice);
+      if (remote.lastDice && !isRollingRef.current) {
+        setDiceDisplay(clampDiceValue(remote.lastDice));
       }
       setRoom((prev) =>
         prev
@@ -4297,9 +4437,13 @@ const LudoKingPage: React.FC<LudoKingPageProps> = ({
           const sync = payload as LudoSyncPayload | undefined;
           if (!sync || typeof sync.version !== 'number') return;
           if (sync.version > stateVersionRef.current) {
+            stateVersionRef.current = sync.version;
+            piecesRef.current = sync.pieces;
             setStateVersion(sync.version);
             setLudoPieces(sync.pieces);
-            if (sync.lastDice) setDiceDisplay(sync.lastDice);
+            if (sync.lastDice && !isRollingRef.current) {
+              setDiceDisplay(clampDiceValue(sync.lastDice));
+            }
             setRoom((prev) =>
               prev
                 ? {
@@ -4572,8 +4716,13 @@ const LudoKingPage: React.FC<LudoKingPageProps> = ({
       logText?: string,
       actorSlot?: PlayerSlot
     ) => {
+      stateVersionRef.current = nextPayload.version;
+      piecesRef.current = nextPayload.pieces;
       setStateVersion(nextPayload.version);
       setLudoPieces(nextPayload.pieces);
+      if (nextPayload.lastDice && !isRollingRef.current) {
+        setDiceDisplay(clampDiceValue(nextPayload.lastDice));
+      }
       setRoom((prev) =>
         prev
           ? {
@@ -4673,6 +4822,7 @@ const LudoKingPage: React.FC<LudoKingPageProps> = ({
     };
     setVisualPieces(initPayload.pieces);
     lastAnimVersionRef.current = initPayload.version;
+    setDiceDisplay(1);
     await pushLudoStateAndLog(initPayload, 'Permainan Ludo King dimulai! 👑');
   };
 
@@ -4697,6 +4847,7 @@ const LudoKingPage: React.FC<LudoKingPageProps> = ({
     setPendingDice(null);
     setSelectablePieces([]);
     setBoardToast(null);
+    setDiceDisplay(1);
     setIsRolling(false);
     setIsAnimatingMove(false);
 
@@ -4760,7 +4911,7 @@ const LudoKingPage: React.FC<LudoKingPageProps> = ({
     setPendingDice(null);
     setSelectablePieces([]);
     setBoardToast(null);
-    setDiceDisplay(6);
+    setDiceDisplay(1);
     setBotTurnNonce(0);
   };
 
@@ -4863,64 +5014,88 @@ const LudoKingPage: React.FC<LudoKingPageProps> = ({
       .filter((idx) => idx !== -1);
 
   const rollLudoDice = async () => {
-    if (!room || !mySlot || isRolling || isAnimatingMove || pendingDice !== null) return;
+    if (
+      !room ||
+      !mySlot ||
+      isRolling ||
+      isAnimatingMove ||
+      pendingDice !== null ||
+      rollLockRef.current
+    ) {
+      return;
+    }
     if (room.status !== 'playing' || room.current_turn !== mySlot) return;
 
-    soundFX.playClick();
-    setIsRolling(true);
+    rollLockRef.current = true;
+    const sleep = (ms: number) =>
+      new Promise<void>((res) => window.setTimeout(res, ms));
 
-    const spinTimer = window.setInterval(() => {
-      setDiceDisplay(Math.floor(Math.random() * 6) + 1);
-    }, 125);
-
-    await new Promise<void>((res) => window.setTimeout(res, 1000));
-    window.clearInterval(spinTimer);
-    setIsRolling(false);
-
-    const dice = Math.floor(Math.random() * 6) + 1;
-    setDiceDisplay(dice);
-
-    const myArr = piecesRef.current[mySlot];
-    const movable = getMovablePieceIndices(myArr, dice);
-    const actorName =
-      playersRef.current.find((p) => p.player_slot === mySlot)?.name ||
-      (mySlot === 'player1' ? 'Merah' : 'Kuning');
-    const otherSlot: PlayerSlot = mySlot === 'player1' ? 'player2' : 'player1';
-
-    if (movable.length === 0) {
+    try {
+      const dice = rollFairDiceValue();
+      let spinStopped = false;
       soundFX.playClick();
-      showBoardToast(`Dadu ${dice} - Belum ada bidak yang bisa jalan`, 1800);
-      const nextPayload: LudoSyncPayload = {
-        version: stateVersionRef.current + 1,
-        pieces: piecesRef.current,
-        currentTurn: otherSlot,
-        status: 'playing',
-        winner: null,
-        lastDice: dice,
-      };
-      await pushLudoStateAndLog(
-        nextPayload,
-        `${actorName} lempar ${dice}, belum ada bidak jalan`,
-        mySlot
-      );
-      if (isBotRoom) {
-        setBotTurnNonce((n) => n + 1);
+      setIsRolling(true);
+
+      const spinTimer = window.setInterval(() => {
+        if (!spinStopped) {
+          setDiceDisplay((prev) => nextSpinDiceFace(prev));
+        }
+      }, 115);
+
+      await sleep(920);
+      spinStopped = true;
+      window.clearInterval(spinTimer);
+      setIsRolling(false);
+      setDiceDisplay(dice);
+
+      // Pause briefly on the settled final dice face & label so visual + text + move match 100%
+      await sleep(380);
+      if (roomRef.current?.id !== room.id) return;
+
+      const myArr = piecesRef.current[mySlot];
+      const movable = getMovablePieceIndices(myArr, dice);
+      const actorName =
+        playersRef.current.find((p) => p.player_slot === mySlot)?.name ||
+        (mySlot === 'player1' ? 'Merah' : 'Kuning');
+      const otherSlot: PlayerSlot = mySlot === 'player1' ? 'player2' : 'player1';
+
+      if (movable.length === 0) {
+        soundFX.playClick();
+        showBoardToast(`Dadu ${dice} - Belum ada bidak yang bisa jalan`, 1800);
+        const nextPayload: LudoSyncPayload = {
+          version: stateVersionRef.current + 1,
+          pieces: piecesRef.current,
+          currentTurn: otherSlot,
+          status: 'playing',
+          winner: null,
+          lastDice: dice,
+        };
+        await pushLudoStateAndLog(
+          nextPayload,
+          `${actorName} lempar ${dice}, belum ada bidak jalan`,
+          mySlot
+        );
+        if (isBotRoom) {
+          setBotTurnNonce((n) => n + 1);
+        }
+        return;
       }
-      return;
-    }
 
-    // Auto-execute if only 1 distinct effective move (only 1 movable piece, or all movable pieces are in base)
-    const allInBase = movable.every((idx) => myArr[idx] < 0);
-    if (movable.length === 1 || allInBase) {
-      await executeLudoMove(mySlot, movable[0], dice);
-      return;
-    }
+      // Auto-execute if only 1 distinct effective move (only 1 movable piece, or all movable pieces are in base)
+      const allInBase = movable.every((idx) => myArr[idx] < 0);
+      if (movable.length === 1 || allInBase) {
+        await executeLudoMove(mySlot, movable[0], dice);
+        return;
+      }
 
-    // Multiple movable pieces on board -> let user tap which piece to move
-    soundFX.playPop();
-    setPendingDice(dice);
-    setSelectablePieces(movable);
-    showBoardToast(`Dapat ${dice}! Tap bidak yang berkedip!`, 2400);
+      // Multiple movable pieces on board -> let user tap which piece to move
+      soundFX.playPop();
+      setPendingDice(dice);
+      setSelectablePieces(movable);
+      showBoardToast(`Dapat ${dice}! Tap bidak yang berkedip!`, 2400);
+    } finally {
+      rollLockRef.current = false;
+    }
   };
 
   // Bot Auto-Turn for Ludo King Solo Test
@@ -4942,21 +5117,27 @@ const LudoKingPage: React.FC<LudoKingPageProps> = ({
       await sleep(700);
       if (cancelled || roomRef.current?.id !== LUDO_BOT_ROOM_ID) return;
 
+      const dice = rollFairDiceValue();
+      let spinStopped = false;
       setIsRolling(true);
       const spinTimer = window.setInterval(() => {
-        setDiceDisplay(Math.floor(Math.random() * 6) + 1);
-      }, 125);
+        if (!spinStopped && !cancelled) {
+          setDiceDisplay((prev) => nextSpinDiceFace(prev));
+        }
+      }, 115);
 
-      await sleep(950);
+      await sleep(900);
+      spinStopped = true;
       window.clearInterval(spinTimer);
       if (cancelled || roomRef.current?.id !== LUDO_BOT_ROOM_ID) {
         setIsRolling(false);
         return;
       }
       setIsRolling(false);
-
-      const dice = Math.floor(Math.random() * 6) + 1;
       setDiceDisplay(dice);
+
+      await sleep(360);
+      if (cancelled || roomRef.current?.id !== LUDO_BOT_ROOM_ID) return;
 
       const botArr = piecesRef.current.player2;
       const movable = getMovablePieceIndices(botArr, dice);
@@ -5033,6 +5214,7 @@ const LudoKingPage: React.FC<LudoKingPageProps> = ({
     setPendingDice(null);
     setSelectablePieces([]);
     setBotLogs([]);
+    setDiceDisplay(1);
     await pushLudoStateAndLog(resetPayload, 'Main Ludo King lagi! 👑');
   };
 
@@ -5815,10 +5997,11 @@ const LudoKingPage: React.FC<LudoKingPageProps> = ({
                   : ''
               }`}
             >
-              <span className="text-[36px] leading-none">
-                {UT_DICE_FACES[Math.max(0, Math.min(5, diceDisplay - 1))]}
-              </span>
-              <span className="mt-1 text-[10px] font-extrabold">
+              <DiceFaceSvg
+                value={diceDisplay}
+                muted={!isMyTurn && !isRolling && !isAnimatingMove && pendingDice === null}
+              />
+              <span className="mt-1.5 text-[11px] font-extrabold tracking-wide">
                 {isRolling ? '...' : `Dadu ${diceDisplay}`}
               </span>
             </button>
